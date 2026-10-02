@@ -1,0 +1,10 @@
+{
+    "wall_count": 2,
+    "bottom_solid_layers": 3,
+    "top_solid_layers": 3,
+    "infill_density": 15.0,
+    "infill_pattern": "grid",
+    "nozzle_diameter": 0.4,
+    "layer_height": 0.2,
+    "continuous_spiral": false
+}

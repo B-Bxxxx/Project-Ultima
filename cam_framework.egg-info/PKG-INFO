@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: cam-framework
+Version: 0.1.0
+Summary: Modular 5-Axis Additive Manufacturing CAM Framework
+Author-email: Your Name <your.email@example.com>
+Requires-Python: >=3.9
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: trimesh>=3.23.0
+Requires-Dist: shapely>=2.0.0
+Requires-Dist: jinja2>=3.1.2
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"

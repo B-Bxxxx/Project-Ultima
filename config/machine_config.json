@@ -1,0 +1,12 @@
+{
+    "kinematic_chain": "Tool -> Z -> Y -> X -> B -> C -> Bed",
+    "pivot_offset_x": 0.0,
+    "pivot_offset_y": -50.0,
+    "pivot_offset_z": 120.0,
+    "eccentricity_x": 0.1,
+    "eccentricity_y": -0.1,
+    "b_axis_min": -90.0,
+    "b_axis_max": 90.0,
+    "c_axis_min": -36000.0,
+    "c_axis_max": 36000.0
+}
