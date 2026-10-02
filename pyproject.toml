@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cam-framework"
+version = "0.1.0"
+description = "Modular 5-Axis Additive Manufacturing CAM Framework"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "numpy>=1.24.0",
+    "trimesh>=3.23.0",
+    "shapely>=2.0.0",
+    "jinja2>=3.1.2"
+]
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[tool.setuptools]
+packages = ["src"]
