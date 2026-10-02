@@ -23,6 +23,7 @@ class MinimalPrintProfile(BaseModel):
     nozzle_diameter: float = Field(0.4, description="Nozzle diameter in mm")
     layer_height: float = Field(0.2, description="Layer height in mm")
     continuous_spiral: bool = Field(False, description="True if continuous single-wall spiral/vase mode")
+    filament_diameter: float = Field(1.75, description="Filament diameter in mm")
 
 class SpatialContour(BaseModel):
     """
@@ -39,6 +40,22 @@ class UniversalLayer(BaseModel):
     layer_index: int = Field(..., description="Index of this layer")
     z_height: float = Field(..., description="Nominal Z height of the layer")
     contours: List[SpatialContour] = Field(..., description="List of spatial contours forming this layer")
+
+class UniversalSlicedModel(BaseModel):
+    """
+    A container holding multiple universal layers.
+    Stage 1 -> Stage 2 contract.
+    """
+    layers: List[UniversalLayer] = Field(..., description="List of universal layers")
+
+    def to_json_file(self, path: str) -> None:
+        with open(path, 'w') as f:
+            f.write(self.model_dump_json(indent=4))
+
+    @classmethod
+    def from_json_file(cls, path: str) -> "UniversalSlicedModel":
+        with open(path, 'r') as f:
+            return cls.model_validate_json(f.read())
 
 class CLDataWaypoint(BaseModel):
     """
@@ -61,6 +78,15 @@ class CLDataTrajectory(BaseModel):
     """
     waypoints: List[CLDataWaypoint] = Field(..., description="Ordered list of cutter location waypoints")
 
+    def to_json_file(self, path: str) -> None:
+        with open(path, 'w') as f:
+            f.write(self.model_dump_json(indent=4))
+
+    @classmethod
+    def from_json_file(cls, path: str) -> "CLDataTrajectory":
+        with open(path, 'r') as f:
+            return cls.model_validate_json(f.read())
+
 class MachineConfig(BaseModel):
     """
     Kinematic configuration for Stage 3.
@@ -75,6 +101,8 @@ class MachineConfig(BaseModel):
     b_axis_max: float = Field(..., description="Maximum B-axis angle in degrees")
     c_axis_min: float = Field(..., description="Minimum C-axis angle in degrees")
     c_axis_max: float = Field(..., description="Maximum C-axis angle in degrees")
+    b_axis_vector: Tuple[float, float, float] = Field((0.0, 1.0, 0.0), description="B-axis rotation vector")
+    c_axis_vector: Tuple[float, float, float] = Field((0.0, 0.0, 1.0), description="C-axis rotation vector")
 
 class MachineStateVector(BaseModel):
     """
@@ -89,3 +117,20 @@ class MachineStateVector(BaseModel):
     extrusion_volume: float = Field(0.0, description="Extrusion volume for this move")
     feedrate: float = Field(..., description="Feedrate in mm/min")
     is_travel_move: bool = Field(False, description="True if this is a travel move")
+
+
+class MachineTrajectory(BaseModel):
+    """
+    A container holding multiple machine state vectors.
+    Stage 3 -> Stage 4 contract.
+    """
+    states: List[MachineStateVector] = Field(..., description="List of machine state vectors")
+
+    def to_json_file(self, path: str) -> None:
+        with open(path, 'w') as f:
+            f.write(self.model_dump_json(indent=4))
+
+    @classmethod
+    def from_json_file(cls, path: str) -> "MachineTrajectory":
+        with open(path, 'r') as f:
+            return cls.model_validate_json(f.read())
