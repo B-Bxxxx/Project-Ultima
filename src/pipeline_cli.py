@@ -29,23 +29,17 @@ def run_stage1(plugin_name: str, config_path: str, output_path: str):
     print(f"Stage 1 complete. Output saved to {output_path}")
 
 def run_stage2(input_path: str, config_path: str, output_path: str):
-    print("Stage 2 toolpath generator is not yet fully implemented. Mocking bypass...")
-    # Normally we load UniversalSlicedModel, but here we just convert it to a dummy trajectory for testing
+    print("Running Stage 2 (Toolpath Generation)")
     model = UniversalSlicedModel.from_json_file(input_path)
-    # mock conversion
-    from src.common.schemas import CLDataWaypoint
-    waypoints = []
-    for layer in model.layers:
-        for contour in layer.contours:
-            for pt, norm in zip(contour.points, contour.normals):
-                waypoints.append(CLDataWaypoint(
-                    x=pt[0], y=pt[1], z=pt[2],
-                    i=norm[0], j=norm[1], k=norm[2],
-                    feedrate=1500.0,
-                    is_travel_move=False,
-                    extrusion_volume=0.1
-                ))
-    traj = CLDataTrajectory(waypoints=waypoints)
+
+    with open(config_path, 'r') as f:
+        profile_data = json.load(f)
+    profile = MinimalPrintProfile(**profile_data)
+
+    from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
+    generator = StandardToolpathGenerator()
+    traj = generator.generate_toolpath(model, profile)
+
     traj.to_json_file(output_path)
     print(f"Stage 2 complete. Output saved to {output_path}")
 
@@ -78,6 +72,38 @@ def run_stage4(input_path: str, config_path: str, output_path: str):
     print(f"Stage 4 complete. G-code saved to {output_path}")
 
 
+def run_all(plugin_name: str, slicer_config: str, machine_config: str, print_profile: str, out_prefix: str):
+    print(f"Running Full Pipeline with prefix '{out_prefix}'")
+    stage1_out = f"{out_prefix}_s1.json"
+    stage2_out = f"{out_prefix}_s2.json"
+    stage3_out = f"{out_prefix}_s3.json"
+    stage4_out = f"{out_prefix}.gcode"
+
+    run_stage1(plugin_name, slicer_config, stage1_out)
+    run_stage2(stage1_out, print_profile, stage2_out)
+    run_stage3(stage2_out, machine_config, stage3_out)
+    run_stage4(stage3_out, print_profile, stage4_out)
+    print(f"Full pipeline complete. Final G-code: {stage4_out}")
+
+
+def visualize(input_path: str, output_path: str):
+    from src.common.visualizer import plot_universal_model, plot_cldata_trajectory
+    print(f"Visualizing {input_path} -> {output_path}")
+
+    # Try to guess the schema
+    with open(input_path, 'r') as f:
+        data = json.load(f)
+
+    if "layers" in data:
+        model = UniversalSlicedModel(**data)
+        plot_universal_model(model, output_path)
+    elif "waypoints" in data:
+        traj = CLDataTrajectory(**data)
+        plot_cldata_trajectory(traj, output_path)
+    else:
+        print("Unknown JSON format. Must be UniversalSlicedModel or CLDataTrajectory.")
+        sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser(description="Modular 5-Axis CAM Pipeline Runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -106,6 +132,19 @@ def main():
     p4.add_argument("--config", required=True, help="Path to print profile JSON")
     p4.add_argument("--output", required=True, help="Path to output G-Code file")
 
+    # run-all
+    pall = subparsers.add_parser("run-all")
+    pall.add_argument("--plugin", required=True, help="Slicer plugin name")
+    pall.add_argument("--slicer-config", required=True, help="Path to plugin parameters JSON")
+    pall.add_argument("--machine-config", required=True, help="Path to machine config JSON")
+    pall.add_argument("--print-profile", required=True, help="Path to print profile JSON")
+    pall.add_argument("--out-prefix", required=True, help="Prefix for output files")
+
+    # visualize
+    pvis = subparsers.add_parser("visualize")
+    pvis.add_argument("--input", required=True, help="Path to intermediate JSON file")
+    pvis.add_argument("--output", required=True, help="Path to output HTML plot")
+
     args = parser.parse_args()
 
     if args.command == "run-stage1":
@@ -116,6 +155,10 @@ def main():
         run_stage3(args.input, args.config, args.output)
     elif args.command == "run-stage4":
         run_stage4(args.input, args.config, args.output)
+    elif args.command == "run-all":
+        run_all(args.plugin, args.slicer_config, args.machine_config, args.print_profile, args.out_prefix)
+    elif args.command == "visualize":
+        visualize(args.input, args.output)
 
 if __name__ == "__main__":
     main()

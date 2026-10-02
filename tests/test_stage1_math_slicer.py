@@ -36,8 +36,8 @@ def test_math_slicer_output():
     assert pt1[1] == pytest.approx(0.0)
     assert pt1[2] == pytest.approx(0.0)
 
-    # Verify normal points outward
+    # Verify normal defaults to vertical (tilt=0)
     n1 = contour.normals[0]
-    assert n1[0] == pytest.approx(1.0)
+    assert n1[0] == pytest.approx(0.0)
     assert n1[1] == pytest.approx(0.0)
-    assert n1[2] == pytest.approx(0.0)
+    assert n1[2] == pytest.approx(1.0)
