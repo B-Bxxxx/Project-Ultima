@@ -25,3 +25,4 @@ share/python-wheels/
 *.egg
 .pytest_cache/
 tests/output/
+stage1_comparison.html
