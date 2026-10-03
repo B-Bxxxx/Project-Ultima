@@ -96,6 +96,55 @@ def generate_stage1_comparison_dashboard(models: Dict[str, UniversalSlicedModel]
     fig.write_html(output_html)
 
 
+def generate_stage3_comparison_dashboard(trajectories: Dict[str, "MachineTrajectory"], output_html: str):
+    """
+    Puts multiple Stage 3 machine trajectory results side-by-side in subplots for kinematics comparison.
+    """
+    titles = list(trajectories.keys())
+    fig = make_subplots(
+        rows=1, cols=len(trajectories),
+        specs=[[{'type': 'scene'} for _ in range(len(trajectories))]],
+        subplot_titles=titles
+    )
+
+    for idx, (title, traj) in enumerate(trajectories.items()):
+        extrude_x, extrude_y, extrude_z = [], [], []
+        travel_x, travel_y, travel_z = [], [], []
+        last_pt = None
+
+        for wp in traj.states:
+            if last_pt is not None:
+                if wp.is_travel_move:
+                    travel_x.extend([last_pt.x, wp.x, None])
+                    travel_y.extend([last_pt.y, wp.y, None])
+                    travel_z.extend([last_pt.z, wp.z, None])
+                else:
+                    extrude_x.extend([last_pt.x, wp.x, None])
+                    extrude_y.extend([last_pt.y, wp.y, None])
+                    extrude_z.extend([last_pt.z, wp.z, None])
+            last_pt = wp
+
+        fig.add_trace(go.Scatter3d(
+            x=extrude_x, y=extrude_y, z=extrude_z,
+            mode='lines', line=dict(color='blue', width=4),
+            name=f'Extrude {title}'
+        ), row=1, col=idx+1)
+
+        fig.add_trace(go.Scatter3d(
+            x=travel_x, y=travel_y, z=travel_z,
+            mode='lines', line=dict(color='red', width=2, dash='dash'),
+            name=f'Travel {title}'
+        ), row=1, col=idx+1)
+
+    fig.update_layout(title="Stage 3: Kinematics Machine Path Comparison Dashboard", height=800)
+
+    for i in range(len(trajectories)):
+        scene_name = f'scene{i+1}' if i > 0 else 'scene'
+        fig.layout[scene_name].aspectmode = 'data'
+
+    fig.write_html(output_html)
+
+
 def plot_cldata_trajectory(traj: CLDataTrajectory, output_html: str):
     # Keep the original Stage 2 visualizer as it was
     fig = go.Figure()
