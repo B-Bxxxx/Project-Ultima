@@ -1,8 +1,0 @@
-README.md
-pyproject.toml
-cam_framework.egg-info/PKG-INFO
-cam_framework.egg-info/SOURCES.txt
-cam_framework.egg-info/dependency_links.txt
-cam_framework.egg-info/requires.txt
-cam_framework.egg-info/top_level.txt
-src/__init__.py
