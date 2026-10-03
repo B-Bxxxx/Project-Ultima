@@ -8,14 +8,14 @@ G28 ; Home all axes
 ; -------------------
 {% for s in states %}
 {% if s.is_travel_move %}
-G0 X{{ "%.3f"|format(s.x) }} Y{{ "%.3f"|format(s.y) }} Z{{ "%.3f"|format(s.z) }} B{{ "%.3f"|format(s.b) }} C{{ "%.3f"|format(s.c) }} F{{ "%.0f"|format(s.feedrate) }}
+G0 X{{ "%.3f"|format(s.x) }} Y{{ "%.3f"|format(s.y) }} Z{{ "%.3f"|format(s.z) }}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(s.b) }} C{{ "%.3f"|format(s.c) }}{% endif %} F{{ "%.0f"|format(s.feedrate) }}
 {% else %}
-G1 X{{ "%.3f"|format(s.x) }} Y{{ "%.3f"|format(s.y) }} Z{{ "%.3f"|format(s.z) }} B{{ "%.3f"|format(s.b) }} C{{ "%.3f"|format(s.c) }} E{{ "%.5f"|format(s.e) }} F{{ "%.0f"|format(s.feedrate) }}
+G1 X{{ "%.3f"|format(s.x) }} Y{{ "%.3f"|format(s.y) }} Z{{ "%.3f"|format(s.z) }}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(s.b) }} C{{ "%.3f"|format(s.c) }}{% endif %} E{{ "%.5f"|format(s.e) }} F{{ "%.0f"|format(s.feedrate) }}
 {% endif %}
 {% endfor %}
 ; -------------------
 ; End G-Code
-G0 Z150 B0 C0 F3000
+G0 Z150{% if profile.include_rotary_axes %} B0 C0{% endif %} F3000
 M104 S0 ; Turn off extruder
 M140 S0 ; Turn off bed
 M84 ; Disable motors

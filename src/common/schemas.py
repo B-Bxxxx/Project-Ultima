@@ -24,6 +24,7 @@ class MinimalPrintProfile(BaseModel):
     layer_height: float = Field(0.2, description="Layer height in mm")
     continuous_spiral: bool = Field(False, description="True if continuous single-wall spiral/vase mode")
     filament_diameter: float = Field(1.75, description="Filament diameter in mm")
+    include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
 
 class SpatialContour(BaseModel):
     """
@@ -31,6 +32,7 @@ class SpatialContour(BaseModel):
     """
     points: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (X, Y, Z) coordinates")
     normals: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (I, J, K) surface normals corresponding to the points")
+    thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
 
 class UniversalLayer(BaseModel):
     """
@@ -103,6 +105,7 @@ class MachineConfig(BaseModel):
     c_axis_max: float = Field(..., description="Maximum C-axis angle in degrees")
     b_axis_vector: Tuple[float, float, float] = Field((0.0, 1.0, 0.0), description="B-axis rotation vector")
     c_axis_vector: Tuple[float, float, float] = Field((0.0, 0.0, 1.0), description="C-axis rotation vector")
+    max_3axis_tilt_deg: float = Field(25.0, description="Maximum safe surface tilt for a 3-axis active-Z machine before collision risk.")
 
 class MachineStateVector(BaseModel):
     """

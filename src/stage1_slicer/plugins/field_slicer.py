@@ -95,15 +95,22 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
             for contour in contours:
                 undeformed_points = []
                 undeformed_normals = []
+                undeformed_thicknesses = []
 
                 for pt in contour.points:
                     u_pt = strategy.undeform_point(pt, layer_idx)
                     norm = strategy.compute_normal(u_pt, layer_idx)
+                    t = strategy.compute_thickness(u_pt, layer_idx)
 
                     undeformed_points.append(u_pt)
                     undeformed_normals.append(norm)
+                    undeformed_thicknesses.append(t)
 
-                undeformed_contours.append(SpatialContour(points=undeformed_points, normals=undeformed_normals))
+                undeformed_contours.append(SpatialContour(
+                    points=undeformed_points,
+                    normals=undeformed_normals,
+                    thicknesses=undeformed_thicknesses
+                ))
 
             if undeformed_contours:
                 # The z_height of the layer conceptually remains the slicing plane's nominal Z

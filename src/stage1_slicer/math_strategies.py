@@ -28,6 +28,10 @@ class BaseSlicingStrategy(ABC):
         """Computes the analytical or numerical gradient surface normal at the undeformed point."""
         pass
 
+    def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
+        """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
+        return getattr(self, "layer_height", 0.2)
+
 
 class PlanarStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
@@ -64,6 +68,10 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
 
+        # Determine pivot center (to prevent negative Z folding)
+        # Default to pivoting around the inner Y edge (min y)
+        self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
+
     def get_layer_count(self) -> int:
         return self.num_layers
 
@@ -74,8 +82,35 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
     def get_slice_plane(self, layer_idx: int):
         tilt = self._get_tilt_for_layer(layer_idx)
         z = self.start_z + layer_idx * self.layer_height
+
+        # Tilt around X-axis. If we pivot at pivot_y, the plane origin must be shifted
+        # so that at y = pivot_y, the height is exactly z.
+        # Plane eq: ny * (y - oy) + nz * (z_p - oz) = 0
+        # If origin is [0, pivot_y, z], it satisfies this cleanly.
+        plane_origin = [0, self.pivot_y, z]
         plane_normal = [0, -np.sin(tilt), np.cos(tilt)]
-        return [0, 0, z], plane_normal
+        return plane_origin, plane_normal
+
+    def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
+        # Distance from pivot determines local thickness spread
+        # thickness = layer_height / cos(tilt) + dy * sin(dtilt)
+        # For simplicity, if tilting, outer radii are thicker.
+        # dtilt = tilt(layer) - tilt(layer-1)
+        if layer_idx == 0:
+            dtilt = self._get_tilt_for_layer(0)
+        else:
+            dtilt = self._get_tilt_for_layer(layer_idx) - self._get_tilt_for_layer(layer_idx - 1)
+
+        tilt = self._get_tilt_for_layer(layer_idx)
+
+        x, y, z = undeformed_pt
+        dy = y - self.pivot_y
+
+        # Geometric local thickness approximation
+        # Base thickness along normal = layer_height * cos(tilt)
+        # Plus arc length due to tilt differential
+        t = (self.layer_height * np.cos(tilt)) + (dy * np.sin(dtilt))
+        return float(max(0.01, t))
 
     def deform_mesh(self) -> trimesh.Trimesh:
         return self.mesh

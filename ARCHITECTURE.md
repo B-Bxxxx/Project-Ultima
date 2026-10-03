@@ -23,10 +23,12 @@ All inter-stage data exchanges are strongly typed using Pydantic in `src/common/
 | `UniversalSlicedModel` | Stage 1 -> Stage 2 | `layers` (List of `UniversalLayer`), each containing `contours` with `points` (X,Y,Z) and `normals` (I,J,K). |
 | `MinimalPrintProfile` | Config -> Stage 2/4 | `layer_height`, `nozzle_diameter`, `continuous_spiral`, `filament_diameter`. |
 | `CLDataTrajectory` | Stage 2 -> Stage 3 | `waypoints` (List of `CLDataWaypoint`): `x`, `y`, `z`, `i`, `j`, `k`, `extrusion_volume`, `feedrate`, `is_travel_move`. |
-| `MachineConfig` | Config -> Stage 3 | `kinematic_topology`, pivot offsets, axis limits. |
+| `MachineConfig` | Config -> Stage 3 | `kinematic_topology`, pivot offsets, axis limits, `max_3axis_tilt_deg`. |
 | `MachineTrajectory` | Stage 3 -> Stage 4 | `states` (List of `MachineStateVector`): `x`, `y`, `z`, `b`, `c`, `extrusion_volume`, `feedrate`. |
 
 ## Stage 1 Mathematical Slicing Strategies (`src/stage1_slicer/math_strategies.py`)
+
+*Note: All strategies support adaptive local layer thickness and dynamic mesh bounds.*
 
 | Strategy ID | Description | Parameters |
 | --- | --- | --- |
@@ -42,7 +44,14 @@ All inter-stage data exchanges are strongly typed using Pydantic in `src/common/
 | --- | --- |
 | `trunnion_table_xyzbc` | $P_m = P_p + R_B(B) \cdot (R_C(C) \cdot P_e - P_p)$ |
 | `swivel_head_xyzbc` | $P_m = P + P_p - R_C(C) \cdot R_B(B) \cdot P_p$ |
-| `planar_3axis_xyz` | $P_m = P$ (Pass-through) |
+| `planar_3axis_xyz` | $P_m = P$ (Pass-through). Logs warnings if surface tilt exceeds `max_3axis_tilt_deg`. |
+
+## User Interfaces
+
+| Interface | Command | Description |
+| --- | --- | --- |
+| **Interactive GUI** | `streamlit run src/ui_app.py` | Web-based interface to generate/upload meshes, configure slicing/kinematics parameters, preview 3D layers/toolpaths via Plotly, and download G-code. |
+| **CLI Runner** | `python3 src/pipeline_cli.py run-all` | Headless execution of all stages sequentially using JSON configs. |
 
 ## Validation & Test Matrix
 Execute with `pytest tests/`

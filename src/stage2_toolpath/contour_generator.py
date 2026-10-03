@@ -53,7 +53,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     # In continuous spiral mode, extrude directly to the first point of the new contour
                     dl = math.dist(last_pt, first_pt)
                     if dl > 1e-6:
-                        vol = dl * profile.layer_height * profile.nozzle_diameter
+                        local_h = profile.layer_height
+                        if contour.thicknesses and len(contour.thicknesses) > 0:
+                            local_h = contour.thicknesses[0]
+                        vol = dl * local_h * profile.nozzle_diameter
                         waypoints.append(CLDataWaypoint(
                             x=first_pt[0], y=first_pt[1], z=first_pt[2],
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
@@ -65,12 +68,20 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 last_pt = first_pt
 
                 # Now iterate through the rest of the contour points and extrude
-                for pt, norm in zip(contour.points[1:], contour.normals[1:]):
+                for idx, (pt, norm) in enumerate(zip(contour.points[1:], contour.normals[1:])):
+                    # offset by 1 since we are iterating from 1:
+                    real_idx = idx + 1
+
                     dl = math.dist(last_pt, pt)
 
                     if dl > 1e-6:
-                        # V_ext = dL * layer_height * nozzle_diameter
-                        vol = dl * profile.layer_height * profile.nozzle_diameter
+                        # Use local thickness if available, else nominal profile layer_height
+                        local_h = profile.layer_height
+                        if contour.thicknesses and len(contour.thicknesses) > real_idx:
+                            local_h = contour.thicknesses[real_idx]
+
+                        # V_ext = dL * local_layer_height * nozzle_diameter
+                        vol = dl * local_h * profile.nozzle_diameter
 
                         waypoints.append(CLDataWaypoint(
                             x=pt[0], y=pt[1], z=pt[2],
