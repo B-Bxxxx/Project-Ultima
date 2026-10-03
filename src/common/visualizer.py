@@ -138,9 +138,8 @@ def generate_stage3_comparison_dashboard(trajectories: Dict[str, "MachineTraject
 
     fig.update_layout(title="Stage 3: Kinematics Machine Path Comparison Dashboard", height=800)
 
-    for i in range(len(trajectories)):
-        scene_name = f'scene{i+1}' if i > 0 else 'scene'
-        fig.layout[scene_name].aspectmode = 'data'
+    # Correctly update all scenes aspectmode
+    fig.update_scenes(aspectmode='data')
 
     fig.write_html(output_html)
 

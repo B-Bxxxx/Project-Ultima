@@ -31,10 +31,10 @@ class BaseSlicingStrategy(ABC):
 
 class PlanarStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
-        self.mesh = mesh
+        self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", 0.0)
-        end_z = params.get("end_z", 10.0)
+        self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+        end_z = params.get("end_z", self.mesh.bounds[1, 2])
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
     def get_layer_count(self) -> int:
@@ -45,7 +45,7 @@ class PlanarStrategy(BaseSlicingStrategy):
         return [0, 0, z], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
-        return self.mesh.copy()
+        return self.mesh
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         return pt
@@ -56,10 +56,10 @@ class PlanarStrategy(BaseSlicingStrategy):
 
 class ProgressiveTiltStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
-        self.mesh = mesh
+        self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", 0.0)
-        end_z = params.get("end_z", 10.0)
+        self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+        end_z = params.get("end_z", self.mesh.bounds[1, 2])
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
@@ -78,7 +78,7 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         return [0, 0, z], plane_normal
 
     def deform_mesh(self) -> trimesh.Trimesh:
-        return self.mesh.copy()
+        return self.mesh
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         return pt
@@ -90,13 +90,19 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
 
 class ConicalStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
-        self.mesh = mesh
+        self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", 0.0)
-        end_z = params.get("end_z", 10.0)
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.cone_angle = np.radians(params.get("cone_angle_deg", 15.0))
         self.tan_alpha = np.tan(self.cone_angle)
+
+        # Precompute deformed mesh
+        self.deformed = self.mesh.copy()
+        r = np.linalg.norm(self.deformed.vertices[:, :2], axis=1)
+        self.deformed.vertices[:, 2] += r * self.tan_alpha
+
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+        end_z = params.get("end_z", self.deformed.bounds[1, 2])
+        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -106,10 +112,7 @@ class ConicalStrategy(BaseSlicingStrategy):
         return [0, 0, z_prime], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
-        deformed = self.mesh.copy()
-        r = np.linalg.norm(deformed.vertices[:, :2], axis=1)
-        deformed.vertices[:, 2] += r * self.tan_alpha
-        return deformed
+        return self.deformed
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
@@ -134,15 +137,23 @@ class ConicalStrategy(BaseSlicingStrategy):
 
 class CustomExpressionStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
-        self.mesh = mesh
+        self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", 0.0)
-        end_z = params.get("end_z", 10.0)
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.expr = params.get("expression", "0.0")
 
         # Security: evaluate expression in strictly restricted namespace
         self.safe_dict = {"np": np, "math": __import__("math"), "__builtins__": {}}
+
+        # Precompute deformed mesh
+        self.deformed = self.mesh.copy()
+        x = self.deformed.vertices[:, 0]
+        y = self.deformed.vertices[:, 1]
+        f_val = self._evaluate(x, y)
+        self.deformed.vertices[:, 2] += f_val
+
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+        end_z = params.get("end_z", self.deformed.bounds[1, 2])
+        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
     def _evaluate(self, x, y):
         r = np.sqrt(x**2 + y**2)
@@ -158,12 +169,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         return [0, 0, z_prime], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
-        deformed = self.mesh.copy()
-        x = deformed.vertices[:, 0]
-        y = deformed.vertices[:, 1]
-        f_val = self._evaluate(x, y)
-        deformed.vertices[:, 2] += f_val
-        return deformed
+        return self.deformed
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
@@ -188,21 +194,38 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
 
 class ExternalScalarFieldStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
-        self.mesh = mesh
-        # We expect params to contain a scalar field array mapped to vertices
-        # Or a callable function / path to an external solution
-        # For simplicity, we assume we receive an array of Z-deformations per vertex.
-        self.vertex_deformations = np.array(params.get("vertex_deformations", np.zeros(len(mesh.vertices))))
+        self.mesh = mesh.copy()
+        self.vertex_deformations = np.array(params.get("vertex_deformations", np.zeros(len(self.mesh.vertices))))
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", 0.0)
-        end_z = params.get("end_z", 10.0)
+
+        # Precompute deformed mesh
+        self.deformed = self.mesh.copy()
+        self.deformed.vertices[:, 2] += self.vertex_deformations
+
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+        end_z = params.get("end_z", self.deformed.bounds[1, 2])
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
-        from scipy.interpolate import LinearNDInterpolator
-        # We use a 2D interpolator assuming mapping is mostly Z-invariant,
-        # or 3D if fully volumetric. Let's use 2D (X, Y) for standard non-planar FDM
-        points_2d = self.mesh.vertices[:, :2]
-        self.interpolator = LinearNDInterpolator(points_2d, self.vertex_deformations)
+        # Setup for pure Numpy IDW (Inverse Distance Weighting) interpolation
+        self.pts_2d = self.mesh.vertices[:, :2]
+
+    def _interpolate_idw(self, x, y):
+        # K-nearest or simple IDW using numpy
+        pt = np.array([x, y])
+        dists = np.linalg.norm(self.pts_2d - pt, axis=1)
+
+        # If exact match
+        min_idx = np.argmin(dists)
+        if dists[min_idx] < 1e-6:
+            return self.vertex_deformations[min_idx]
+
+        # Use K=5 nearest neighbors
+        k = min(5, len(dists))
+        k_indices = np.argpartition(dists, k)[:k]
+
+        weights = 1.0 / (dists[k_indices] ** 2)
+        f_val = np.sum(weights * self.vertex_deformations[k_indices]) / np.sum(weights)
+        return float(f_val)
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -212,16 +235,11 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         return [0, 0, z_prime], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
-        deformed = self.mesh.copy()
-        deformed.vertices[:, 2] += self.vertex_deformations
-        return deformed
+        return self.deformed
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
-        # Interpolate field value at (x,y)
-        f_val = float(self.interpolator([[x, y]])[0])
-        if np.isnan(f_val):
-            f_val = 0.0 # Fallback for out-of-bounds
+        f_val = self._interpolate_idw(x, y)
         real_z = zp - f_val
         return (float(x), float(y), float(real_z))
 
@@ -229,13 +247,9 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         x, y, z = undeformed_pt
         eps = 1e-4
 
-        # Finite difference via interpolator
-        f0 = self.interpolator([[x, y]])[0]
-        fx = self.interpolator([[x + eps, y]])[0]
-        fy = self.interpolator([[x, y + eps]])[0]
-
-        if np.isnan(f0) or np.isnan(fx) or np.isnan(fy):
-            return (0.0, 0.0, 1.0)
+        f0 = self._interpolate_idw(x, y)
+        fx = self._interpolate_idw(x + eps, y)
+        fy = self._interpolate_idw(x, y + eps)
 
         df_dx = (fx - f0) / eps
         df_dy = (fy - f0) / eps

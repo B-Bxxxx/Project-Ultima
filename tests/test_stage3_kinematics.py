@@ -57,7 +57,7 @@ def test_tilted_surface(base_config):
     state = result.states[0]
 
     # Since normal tilts down Y, B axis (tilt around Y) must be used.
-    # From N = [sin(B)cos(C), -sin(B)sin(C), cos(B)]
-    # B should be 45 deg, C should be 90 deg.
+    # With the corrected trunnion derivation (I=-sinBcosC, J=sinBsinC, K=cosB)
+    # J = sin(45)sin(C) -> -sin(45) = sin(45)sin(C) -> sin(C) = -1 -> C = -90 deg.
     assert state.b == pytest.approx(45.0)
-    assert state.c == pytest.approx(90.0)
+    assert state.c == pytest.approx(-90.0)

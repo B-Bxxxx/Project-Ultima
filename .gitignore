@@ -26,3 +26,4 @@ share/python-wheels/
 .pytest_cache/
 tests/output/
 stage1_comparison.html
+kinematics_comparison.html
