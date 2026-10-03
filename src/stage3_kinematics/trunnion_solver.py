@@ -2,7 +2,9 @@ import numpy as np
 from typing import List
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
 from src.stage3_kinematics.base import BaseKinematicSolver
+from src.stage3_kinematics.registry import KinematicsRegistry
 
+@KinematicsRegistry.register("trunnion_table_xyzbc")
 class TrunnionXYZBCSolver(BaseKinematicSolver):
     """
     Kinematic solver for a 5-axis trunnion/gantry (XYZBC) setup.
@@ -108,13 +110,15 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 [-sin_b, 0, cos_b]
             ])
 
-            # The part moves relative to the tool.
-            # In a trunnion, the bed rotates C, then tilts B.
-            V_rot = R_B @ (R_C @ V)
+            # Kinematic chain order for Trunnion (Bed -> C -> B):
+            # First rotate by C around origin
+            P_c = R_C @ P_e
 
-            # Machine coordinates: the rotated vector plus the pivot point
-            # (assuming tool is stationary and table moves, or tool moves in XYZ and table rotates BC)
-            # Typically, G-code XYZ commands the tool relative to the machine origin.
+            # Then tilt by B around pivot
+            V_pivot = P_c - P_pivot
+            V_rot = R_B @ V_pivot
+
+            # Machine coordinates
             P_mach = P_pivot + V_rot
 
             state = MachineStateVector(

@@ -19,12 +19,18 @@ def run_stage1(plugin_name: str, config_path: str, output_path: str):
         print(f"Error: {e}")
         sys.exit(1)
 
-    # Read slicer params (for math model, we just pass params)
     with open(config_path, 'r') as f:
         params = json.load(f)
 
     slicer = plugin_cls()
-    sliced_model = slicer.slice(geometry=None, parameters=params)
+
+    geometry = None
+    if plugin_name == "universal_field_slicer":
+        # Create a dummy mesh for CLI if not provided programmatically
+        import trimesh
+        geometry = trimesh.creation.cylinder(radius=10, height=10)
+
+    sliced_model = slicer.slice(geometry=geometry, parameters=params)
     sliced_model.to_json_file(output_path)
     print(f"Stage 1 complete. Output saved to {output_path}")
 
@@ -51,7 +57,21 @@ def run_stage3(input_path: str, config_path: str, output_path: str):
         config_data = json.load(f)
     config = MachineConfig(**config_data)
 
-    solver = TrunnionXYZBCSolver()
+    # Dynamic loader via registry
+    from src.stage3_kinematics.registry import KinematicsRegistry
+    import src.stage3_kinematics.trunnion_solver
+    import src.stage3_kinematics.head_solver
+    # Default to trunnion for compatibility if not specified
+    solver_name = config_data.get("kinematic_topology", "trunnion_table_xyzbc")
+
+    try:
+        solver_cls = KinematicsRegistry.get_solver(solver_name)
+    except ValueError as e:
+        print(f"Error: {e}")
+        import sys
+        sys.exit(1)
+
+    solver = solver_cls()
     machine_traj = solver.solve(trajectory, config)
     machine_traj.to_json_file(output_path)
     print(f"Stage 3 complete. Output saved to {output_path}")
