@@ -66,9 +66,10 @@ def plot_universal_model(model: UniversalSlicedModel, output_html: str, fig: go.
                 else:
                     fig.add_trace(quiver_trace)
 
-    if show:
-        fig.update_layout(title="Stage 1: Universal Sliced Model", scene=dict(aspectmode='data'))
+    fig.update_layout(title="Stage 1: Universal Sliced Model", scene=dict(aspectmode='data'))
+    if show and output_html:
         fig.write_html(output_html)
+    return fig
 
 
 def generate_stage1_comparison_dashboard(models: Dict[str, UniversalSlicedModel], output_html: str):
@@ -197,4 +198,6 @@ def plot_cldata_trajectory(traj: CLDataTrajectory, output_html: str):
         ))
 
     fig.update_layout(title="Stage 2: CL-Data Trajectory (Toolpath)", scene=dict(aspectmode='data'))
-    fig.write_html(output_html)
+    if output_html:
+        fig.write_html(output_html)
+    return fig

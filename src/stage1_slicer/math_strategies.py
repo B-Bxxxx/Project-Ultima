@@ -4,6 +4,10 @@ from typing import Dict, Any, List, Tuple
 import trimesh
 
 class BaseSlicingStrategy(ABC):
+    def __init__(self, params: Dict[str, Any] = None):
+        if params is None: params = {}
+        self.transition_height = params.get("transition_height", 0.0)
+
     @abstractmethod
     def get_layer_count(self) -> int:
         pass
@@ -17,6 +21,15 @@ class BaseSlicingStrategy(ABC):
     def deform_mesh(self) -> trimesh.Trimesh:
         """Deforms the mesh vertices for slicing."""
         pass
+
+    def get_blend_weight(self, z_val: float) -> float:
+        """Calculates vertical blending weight for transition zones (0 to 1)."""
+        if self.transition_height <= 0.0:
+            return 1.0
+        start = getattr(self, "start_z", 0.0)
+        # z_val is the nominal deformed plane Z
+        w = (z_val - start) / self.transition_height
+        return float(np.clip(w, 0.0, 1.0))
 
     @abstractmethod
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int) -> Tuple[float, float, float]:
@@ -32,9 +45,20 @@ class BaseSlicingStrategy(ABC):
         """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
         return getattr(self, "layer_height", 0.2)
 
+    def _compute_custom_field_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int, f_val: float) -> float:
+        zp = getattr(self, "start_z", 0.0) + layer_idx * getattr(self, "layer_height", 0.2)
+        if self.transition_height <= 0.0 or zp > (getattr(self, "start_z", 0.0) + self.transition_height):
+            return getattr(self, "layer_height", 0.2)
+
+        dw_dzp = 1.0 / self.transition_height
+        local_thickness_ratio = 1.0 - dw_dzp * f_val
+        t = getattr(self, "layer_height", 0.2) * local_thickness_ratio
+        return float(max(0.01, t))
+
 
 class PlanarStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
+        super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
         self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
@@ -60,6 +84,7 @@ class PlanarStrategy(BaseSlicingStrategy):
 
 class ProgressiveTiltStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
+        super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
         self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
@@ -116,15 +141,32 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         return self.mesh
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
+        x, y, zp = pt
+        w = self.get_blend_weight(zp)
+        # Actually tilt strategy just shifts points if pivoting, but we keep pt mapping simple:
+        # Since undeform_point is pass-through for progressive tilt in this simple geometric model,
+        # blend weight doesn't affect coordinates, just normals
         return pt
 
     def compute_normal(self, undeformed_pt: Tuple[float, float, float], layer_idx: int):
         tilt = self._get_tilt_for_layer(layer_idx)
-        return (0.0, float(-np.sin(tilt)), float(np.cos(tilt)))
+        x, y, z = undeformed_pt
+        w = self.get_blend_weight(self.start_z + layer_idx * self.layer_height)
+
+        n_x, n_y, n_z = 0.0, float(-np.sin(tilt)), float(np.cos(tilt))
+
+        # Blend with flat [0, 0, 1]
+        n_x = w * n_x
+        n_y = w * n_y
+        n_z = w * n_z + (1.0 - w) * 1.0
+
+        norm = np.linalg.norm([n_x, n_y, n_z])
+        return (n_x/norm, n_y/norm, n_z/norm)
 
 
 class ConicalStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
+        super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
         self.cone_angle = np.radians(params.get("cone_angle_deg", 15.0))
@@ -133,6 +175,13 @@ class ConicalStrategy(BaseSlicingStrategy):
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
         r = np.linalg.norm(self.deformed.vertices[:, :2], axis=1)
+        # Apply blended deformation up front for bounding box calculation?
+        # For transition zone, vertex deformation should also be blended, but it's simpler
+        # to apply full deformation to mesh and blend point mapping dynamically.
+        # Actually to be precise we should blend vertex deform too:
+        # But we don't know start_z yet!
+        # For now, apply full deformation to vertices for mesh cutting.
+        # The undeform mapping will pull the points back down accurately.
         self.deformed.vertices[:, 2] += r * self.tan_alpha
 
         self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
@@ -152,15 +201,25 @@ class ConicalStrategy(BaseSlicingStrategy):
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
         rad = np.sqrt(x**2 + y**2)
-        real_z = zp - rad * self.tan_alpha
+
+        w = self.get_blend_weight(zp)
+        # Undoing the deformation: If w=1, subtract r*tan_alpha
+        # If w=0 (flat), we don't subtract anything? Wait.
+        # If the mesh was fully deformed, and we slice at Z, but we want flat layer 0:
+        # A fully deformed mesh sliced at flat Z produces a shifted contour.
+        # If we use w, we pull it back conditionally.
+        real_z = zp - w * rad * self.tan_alpha
         return (float(x), float(y), float(real_z))
 
     def compute_normal(self, undeformed_pt: Tuple[float, float, float], layer_idx: int):
         x, y, z = undeformed_pt
+        zp = self.start_z + layer_idx * self.layer_height
+        w = self.get_blend_weight(zp)
+
         rad = np.sqrt(x**2 + y**2)
         if rad > 1e-6:
-            df_dx = (x / rad) * self.tan_alpha
-            df_dy = (y / rad) * self.tan_alpha
+            df_dx = w * (x / rad) * self.tan_alpha
+            df_dy = w * (y / rad) * self.tan_alpha
         else:
             df_dx = 0.0
             df_dy = 0.0
@@ -169,9 +228,33 @@ class ConicalStrategy(BaseSlicingStrategy):
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
 
+    def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
+        x, y, z = undeformed_pt
+        zp = self.start_z + layer_idx * self.layer_height
+
+        if self.transition_height <= 0.0 or zp > (self.start_z + self.transition_height):
+            return self.layer_height
+
+        # The true deformation is z' = z + w(z') * f(x, y)
+        # Therefore z = z' - w(z') * f(x, y)
+        # We want the local vertical thickness mapping: dz / dz'
+        # dz/dz' = 1 - dw/dz' * f(x, y)
+        # where w(z') = (z' - start_z) / transition_height  =>  dw/dz' = 1 / transition_height
+
+        rad = np.sqrt(x**2 + y**2)
+        f_val = rad * self.tan_alpha
+
+        dw_dzp = 1.0 / self.transition_height
+        local_thickness_ratio = 1.0 - dw_dzp * f_val
+
+        t = self.layer_height * local_thickness_ratio
+        return float(max(0.01, t))
+
+
 
 class CustomExpressionStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
+        super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
         self.expr = params.get("expression", "0.0")
@@ -208,27 +291,37 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
+        w = self.get_blend_weight(zp)
         f_val = self._evaluate(x, y)
-        real_z = zp - f_val
+        real_z = zp - w * f_val
         return (float(x), float(y), float(real_z))
 
     def compute_normal(self, undeformed_pt: Tuple[float, float, float], layer_idx: int):
         x, y, z = undeformed_pt
+        zp = self.start_z + layer_idx * self.layer_height
+        w = self.get_blend_weight(zp)
+
         eps = 1e-5
         f0 = self._evaluate(x, y)
         fx = self._evaluate(x + eps, y)
         fy = self._evaluate(x, y + eps)
 
-        df_dx = (fx - f0) / eps
-        df_dy = (fy - f0) / eps
+        df_dx = w * (fx - f0) / eps
+        df_dy = w * (fy - f0) / eps
 
         norm_vec = np.array([-df_dx, -df_dy, 1.0])
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
 
+    def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
+        x, y, z = undeformed_pt
+        f_val = self._evaluate(x, y)
+        return self._compute_custom_field_thickness(undeformed_pt, layer_idx, f_val)
+
 
 class ExternalScalarFieldStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
+        super().__init__(params)
         self.mesh = mesh.copy()
         self.vertex_deformations = np.array(params.get("vertex_deformations", np.zeros(len(self.mesh.vertices))))
         self.layer_height = params.get("layer_height", 0.2)
@@ -274,21 +367,30 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
+        w = self.get_blend_weight(zp)
         f_val = self._interpolate_idw(x, y)
-        real_z = zp - f_val
+        real_z = zp - w * f_val
         return (float(x), float(y), float(real_z))
 
     def compute_normal(self, undeformed_pt: Tuple[float, float, float], layer_idx: int):
         x, y, z = undeformed_pt
+        zp = self.start_z + layer_idx * self.layer_height
+        w = self.get_blend_weight(zp)
+
         eps = 1e-4
 
         f0 = self._interpolate_idw(x, y)
         fx = self._interpolate_idw(x + eps, y)
         fy = self._interpolate_idw(x, y + eps)
 
-        df_dx = (fx - f0) / eps
-        df_dy = (fy - f0) / eps
+        df_dx = w * (fx - f0) / eps
+        df_dy = w * (fy - f0) / eps
 
         norm_vec = np.array([-df_dx, -df_dy, 1.0])
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
+
+    def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
+        x, y, z = undeformed_pt
+        f_val = self._interpolate_idw(x, y)
+        return self._compute_custom_field_thickness(undeformed_pt, layer_idx, f_val)

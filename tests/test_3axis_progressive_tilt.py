@@ -73,7 +73,7 @@ def test_3axis_progressive_tilt_adaptive_extrusion():
     # Assert B and C coordinates are omitted because include_rotary_axes is False
     # Check that " B0" or similar does not exist in standard G-code lines
     for line in gcode.split('\n'):
-        if line.startswith('G0') or line.startswith('G1'):
+        if line.startswith('G0 ') or (line.startswith('G1 ') and ' X' in line):
             assert " B" not in line
             assert " C" not in line
             assert " Z" in line

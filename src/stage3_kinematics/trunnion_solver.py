@@ -136,7 +136,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 c=float(c_deg),
                 extrusion_volume=wp.extrusion_volume,
                 feedrate=wp.feedrate,
-                is_travel_move=wp.is_travel_move
+                is_travel_move=wp.is_travel_move,
+                feature_type=wp.feature_type
             )
             states.append(state)
 

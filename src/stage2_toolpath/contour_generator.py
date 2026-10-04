@@ -36,7 +36,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
                             extrusion_volume=0.0,
                             feedrate=3000.0, # default travel feedrate
-                            is_travel_move=True
+                            is_travel_move=True,
+                            feature_type=contour.feature_type
                         ))
 
                 # For continuous spiral or normal extrusion, add the first point of the contour
@@ -47,7 +48,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                         i=first_norm[0], j=first_norm[1], k=first_norm[2],
                         extrusion_volume=0.0,
                         feedrate=3000.0,
-                        is_travel_move=True
+                        is_travel_move=True,
+                        feature_type=contour.feature_type
                     ))
                 elif profile.continuous_spiral and last_pt is not None:
                     # In continuous spiral mode, extrude directly to the first point of the new contour
@@ -62,7 +64,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
                             extrusion_volume=vol,
                             feedrate=1500.0,
-                            is_travel_move=False
+                            is_travel_move=False,
+                            feature_type=contour.feature_type
                         ))
 
                 last_pt = first_pt
@@ -88,7 +91,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             i=norm[0], j=norm[1], k=norm[2],
                             extrusion_volume=vol,
                             feedrate=1500.0, # default extrusion feedrate
-                            is_travel_move=False
+                            is_travel_move=False,
+                            feature_type=contour.feature_type
                         ))
                         last_pt = pt
 

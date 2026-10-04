@@ -33,7 +33,8 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
                 "c": state.c,
                 "e": e_val,
                 "feedrate": state.feedrate,
-                "is_travel_move": state.is_travel_move
+                "is_travel_move": state.is_travel_move,
+                "feature_type": getattr(state, "feature_type", "outer_wall")
             })
 
         # Load Jinja2 template

@@ -25,6 +25,8 @@ class MinimalPrintProfile(BaseModel):
     continuous_spiral: bool = Field(False, description="True if continuous single-wall spiral/vase mode")
     filament_diameter: float = Field(1.75, description="Filament diameter in mm")
     include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
+    retract_distance: float = Field(0.8, description="Retraction distance in mm for travel moves")
+    z_hop: float = Field(0.4, description="Z-hop height in mm during travel moves")
 
 class SpatialContour(BaseModel):
     """
@@ -33,6 +35,7 @@ class SpatialContour(BaseModel):
     points: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (X, Y, Z) coordinates")
     normals: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (I, J, K) surface normals corresponding to the points")
     thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
+    feature_type: str = Field("outer_wall", description="Type of feature: outer_wall, inner_wall, or infill")
 
 class UniversalLayer(BaseModel):
     """
@@ -72,6 +75,7 @@ class CLDataWaypoint(BaseModel):
     extrusion_volume: float = Field(0.0, description="Extrusion volume for this move")
     feedrate: float = Field(..., description="Feedrate in mm/min")
     is_travel_move: bool = Field(False, description="True if this is a travel move (non-extruding)")
+    feature_type: str = Field("outer_wall", description="Type of feature")
 
 class CLDataTrajectory(BaseModel):
     """
@@ -120,6 +124,7 @@ class MachineStateVector(BaseModel):
     extrusion_volume: float = Field(0.0, description="Extrusion volume for this move")
     feedrate: float = Field(..., description="Feedrate in mm/min")
     is_travel_move: bool = Field(False, description="True if this is a travel move")
+    feature_type: str = Field("outer_wall", description="Type of feature")
 
 
 class MachineTrajectory(BaseModel):

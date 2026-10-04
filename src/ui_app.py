@@ -57,7 +57,8 @@ with st.sidebar:
 
     stage1_params = {
         "strategy": strategy,
-        "layer_height": st.number_input("Layer Height", value=0.4, step=0.1)
+        "layer_height": st.number_input("Layer Height", value=0.4, step=0.1),
+        "transition_height": st.number_input("Flat Transition Height", value=2.0, step=0.5)
     }
 
     if strategy == "progressive_tilt":
@@ -70,9 +71,16 @@ with st.sidebar:
 
     st.header("3. Stage 2: Print Profile")
     nozzle_dia = st.number_input("Nozzle Dia", value=0.4)
+    num_perims = st.number_input("Num Perimeters", value=2)
+    infill_density = st.number_input("Infill Density", value=0.2, step=0.1)
     continuous_spiral = st.checkbox("Continuous Spiral", value=False)
     feedrate = st.number_input("Feedrate", value=1500)
     include_rotary = st.checkbox("Include Rotary Axes (B/C)", value=True)
+
+    # Inject walls and infill to stage 1 slice params because they happen before mapping
+    stage1_params["nozzle_diameter"] = nozzle_dia
+    stage1_params["num_perimeters"] = int(num_perims)
+    stage1_params["infill_density"] = infill_density
 
     st.header("4. Stage 3: Kinematics")
     topology = st.selectbox("Machine Topology", [
@@ -133,25 +141,18 @@ tab1, tab2, tab3 = st.tabs(["Stage 1: Layer Inspector", "Stage 2/3: Toolpath & K
 
 with tab1:
     if st.session_state.stage1_model:
-        # Save to temp HTML and read to render in streamlit
-        tmp_html = "temp_stage1.html"
-        plot_universal_model(st.session_state.stage1_model, tmp_html)
-        with open(tmp_html, "r") as f:
-            html_data = f.read()
-        st.components.v1.html(html_data, height=600)
+        fig = plot_universal_model(st.session_state.stage1_model, output_html=None)
+        st.plotly_chart(fig, use_container_width=True, height=600)
     else:
         st.info("Run the pipeline to inspect layers.")
 
 with tab2:
-    if st.session_state.stage2_traj:
-        tmp_html = "temp_stage2.html"
-        plot_cldata_trajectory(st.session_state.stage2_traj, tmp_html)
-        with open(tmp_html, "r") as f:
-            html_data = f.read()
-        st.components.v1.html(html_data, height=600)
+    if st.session_state.stage2_traj and st.session_state.stage3_traj:
+        fig = plot_cldata_trajectory(st.session_state.stage2_traj, output_html=None)
+        st.plotly_chart(fig, use_container_width=True, height=600)
 
         # Simple metrics
-        b_angles = [s.b for s in st.session_state.stage3_traj.states if not s.is_travel_move]
+        b_angles = [s.b for s in st.session_state.stage3_traj.states if getattr(s, "is_travel_move", False) == False]
         z_coords = [s.z for s in st.session_state.stage3_traj.states if not s.is_travel_move]
         if b_angles:
             st.metric("Max Tilt (B axis)", f"{max(b_angles):.2f}°")
