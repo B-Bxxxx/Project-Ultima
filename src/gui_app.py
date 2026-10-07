@@ -398,7 +398,7 @@ class MainWindow(QMainWindow):
         if self.mesh:
             v = self.mesh.vertices
             f = self.mesh.faces
-            mesh_item_solid = gl.GLMeshItem(vertexes=v, faces=f, color=(0.4, 0.4, 0.4, 0.6), smooth=True)
+            mesh_item_solid = gl.GLMeshItem(vertexes=v, faces=f, color=(0.4, 0.4, 0.4, 0.6), smooth=True, drawEdges=True, edgeColor=(1.0, 1.0, 1.0, 0.5))
             self.gl_stage0.addItem(mesh_item_solid)
 
             for v_w in (self.gl_stage1, self.gl_stage2):
