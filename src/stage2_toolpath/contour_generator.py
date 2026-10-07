@@ -29,41 +29,52 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         return pts
 
     def _generate_2d_features(self, layer, profile: MinimalPrintProfile, strategy=None):
+        import shapely.geometry as sg
         if not layer.contours:
             return layer.contours
 
-        polygons = []
+        rings = []
         for contour in layer.contours:
             if len(contour.points) > 2 and contour.points[0] == contour.points[-1]:
                 pts_2d = [(p[0], p[1]) for p in contour.points]
                 try:
-                    poly = sg.Polygon(pts_2d)
-                    if poly.is_valid:
-                        polygons.append(poly)
+                    ring = sg.LinearRing(pts_2d)
+                    if ring.is_valid:
+                        # LinearRings don't have area, so we make them polygons temporarily to sort
+                        poly = sg.Polygon(ring)
+                        if poly.is_valid:
+                            rings.append((poly.area, ring, poly))
                 except:
                     pass
 
-        if not polygons:
+        if not rings:
             return layer.contours
 
-        polygons.sort(key=lambda p: p.area, reverse=True)
+        # Sort rings by area descending
+        rings.sort(key=lambda r: r[0], reverse=True)
 
         valid_polygons = []
-        for p in polygons:
-            is_hole = False
-            for vp in valid_polygons:
-                if vp.contains(p):
-                    try:
-                        diff = vp.difference(p)
-                        if diff.is_valid:
-                            idx = valid_polygons.index(vp)
-                            valid_polygons[idx] = diff
-                            is_hole = True
-                            break
-                    except:
-                        pass
-            if not is_hole:
-                valid_polygons.append(p)
+        used_as_hole = set()
+
+        for i, (area_i, ring_i, poly_i) in enumerate(rings):
+            if i in used_as_hole:
+                continue
+
+            holes = []
+            for j in range(i + 1, len(rings)):
+                if j in used_as_hole:
+                    continue
+                area_j, ring_j, poly_j = rings[j]
+                if poly_i.contains(poly_j):
+                    holes.append(ring_j)
+                    used_as_hole.add(j)
+
+            try:
+                final_poly = sg.Polygon(shell=ring_i, holes=holes)
+                if final_poly.is_valid:
+                    valid_polygons.append(final_poly)
+            except:
+                pass
 
         new_contours = []
         offset_dist = profile.nozzle_diameter
@@ -75,7 +86,6 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             if len(poly_coords) < 2:
                 return
 
-            # Subdivision logic for 2D points to conform to non-planar shapes
             subdivided_coords = [poly_coords[0]]
             for i in range(1, len(poly_coords)):
                 subdivided_coords.extend(self._subdivide_segment(subdivided_coords[-1], poly_coords[i], profile.max_segment_length))
@@ -115,7 +125,6 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 polys = []
 
             for p in polys:
-                # 1. Concentric Perimeters
                 current_poly = p
                 for i in range(profile.num_perimeters):
                     if current_poly.is_empty:
@@ -135,52 +144,53 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                         for interior in cp.interiors:
                             add_contour(list(interior.coords), f_type)
 
-                    # Offset inward for next perimeter
                     try:
                         current_poly = current_poly.buffer(-offset_dist)
                     except:
                         break
 
-                # 2. Infill inside the remaining current_poly
                 if current_poly.is_empty or profile.infill_density <= 0:
                     continue
 
                 bounds = current_poly.bounds
                 if bounds:
                     minx, miny, maxx, maxy = bounds
-                    # Adjust spacing based on density
-                    # 100% density = offset_dist spacing
-                    # If density is <= 1.0, treat it as a fraction (e.g. 0.2 = 20%). If > 1.0, treat as percentage.
                     density_frac = profile.infill_density if profile.infill_density <= 1.0 else profile.infill_density / 100.0
                     spacing = offset_dist / density_frac if density_frac > 0 else offset_dist * 4
 
-                    x = minx + offset_dist
-                    infill_lines = []
-                    # Alternating rectilinear: vary angle based on layer index
                     angle = profile.infill_angle_deg if layer.layer_index % 2 == 0 else -profile.infill_angle_deg
-
                     import math as m
                     rad = m.radians(angle)
                     cos_a, sin_a = m.cos(rad), m.sin(rad)
 
-                    # Compute rotated bounding box
-                    rot_coords = [(px*cos_a - py*sin_a, px*sin_a + py*cos_a) for px, py in current_poly.exterior.coords]
-                    minx_r = min(r[0] for r in rot_coords)
-                    maxx_r = max(r[0] for r in rot_coords)
-                    miny_r = min(r[1] for r in rot_coords)
-                    maxy_r = max(r[1] for r in rot_coords)
+                    # Instead of rotating bounding box and tracking `x_r` (which had issues),
+                    # let's create a large grid of lines based on the bounding box max diagonal and rotate the lines.
+                    diag = m.hypot(maxx - minx, maxy - miny)
+                    cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
 
-                    # Adjust spacing to avoid infinite loop
-                    x_r = minx_r + spacing
+                    x_start = cx - diag / 2
+                    x_end = cx + diag / 2
+                    y_start = cy - diag / 2
+                    y_end = cy + diag / 2
+
                     infill_lines = []
-                    while x_r < maxx_r:
-                        # Inverse rotation for line endpoints
-                        p1_x = x_r*cos_a + miny_r*sin_a
-                        p1_y = -x_r*sin_a + miny_r*cos_a
-                        p2_x = x_r*cos_a + maxy_r*sin_a
-                        p2_y = -x_r*sin_a + maxy_r*cos_a
+                    x_r = x_start
+                    while x_r < x_end:
+                        # Unrotated vertical line
+                        p1_x, p1_y = x_r, y_start
+                        p2_x, p2_y = x_r, y_end
 
-                        line = sg.LineString([(p1_x, p1_y), (p2_x, p2_y)])
+                        # Rotate line around center
+                        dx1, dy1 = p1_x - cx, p1_y - cy
+                        dx2, dy2 = p2_x - cx, p2_y - cy
+
+                        rp1_x = cx + dx1*cos_a - dy1*sin_a
+                        rp1_y = cy + dx1*sin_a + dy1*cos_a
+
+                        rp2_x = cx + dx2*cos_a - dy2*sin_a
+                        rp2_y = cy + dx2*sin_a + dy2*cos_a
+
+                        line = sg.LineString([(rp1_x, rp1_y), (rp2_x, rp2_y)])
                         try:
                             inter = current_poly.intersection(line)
                             if inter.geom_type == 'LineString':
