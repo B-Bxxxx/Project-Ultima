@@ -55,18 +55,22 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
         for area, ring, poly in rings:
             is_hole = False
-            for i, ext_poly in enumerate(valid_exteriors):
+            for i, (ext_poly, ext_ring, holes) in enumerate(valid_exteriors):
                 if ext_poly.contains(poly):
-                    try:
-                        valid_exteriors[i] = ext_poly.difference(poly)
-                        is_hole = True
-                        break
-                    except:
-                        pass
+                    holes.append(ring)
+                    is_hole = True
+                    break
             if not is_hole:
-                valid_exteriors.append(poly)
+                valid_exteriors.append((poly, ring, []))
 
-        valid_polygons = valid_exteriors
+        valid_polygons = []
+        for poly, shell_ring, holes in valid_exteriors:
+            try:
+                p = sg.Polygon(shell=shell_ring, holes=holes)
+                if p.is_valid:
+                    valid_polygons.append(p)
+            except:
+                pass
 
         new_contours = []
         offset_dist = profile.nozzle_diameter
