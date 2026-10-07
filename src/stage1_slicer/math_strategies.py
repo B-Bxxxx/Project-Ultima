@@ -94,19 +94,14 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         if len(self.mesh.vertices) > 0:
             self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
             end_z = params.get("end_z", self.mesh.bounds[1, 2])
+            self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
         else:
             self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
+            self.pivot_y = params.get("pivot_y", 0.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
-
-        # Determine pivot center (to prevent negative Z folding)
-        # Default to pivoting around the inner Y edge (min y)
-        if len(self.mesh.vertices) > 0:
-            self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
-        else:
-            self.pivot_y = params.get("pivot_y", 0.0)
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -333,15 +328,21 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
         super().__init__(params)
         self.mesh = mesh.copy()
-        self.vertex_deformations = np.array(params.get("vertex_deformations", np.zeros(len(self.mesh.vertices))))
+        self.vertex_deformations = np.array(params.get("vertex_deformations", []))
+        if len(self.vertex_deformations) == 0:
+            self.vertex_deformations = np.zeros(len(self.mesh.vertices))
+
         self.layer_height = params.get("layer_height", 0.2)
 
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
-        self.deformed.vertices[:, 2] += self.vertex_deformations
-
-        self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
-        end_z = params.get("end_z", self.deformed.bounds[1, 2])
+        if len(self.deformed.vertices) > 0 and len(self.deformed.vertices) == len(self.vertex_deformations):
+            self.deformed.vertices[:, 2] += self.vertex_deformations
+            self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+            end_z = params.get("end_z", self.deformed.bounds[1, 2])
+        else:
+            self.start_z = params.get("start_z", 0.0)
+            end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
         # Setup for pure Numpy IDW (Inverse Distance Weighting) interpolation

@@ -110,7 +110,13 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                     contour.feature_type = "boundary"
 
                 z_nominal = plane_origin[2]
-                layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, contours=contours))
+                layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, z_prime=z_nominal, contours=contours))
+
+        parameters["start_z"] = strategy.start_z
+        if hasattr(strategy, 'end_z'):
+            parameters["end_z"] = strategy.end_z
+        if hasattr(strategy, 'pivot_y'):
+            parameters["pivot_y"] = strategy.pivot_y
 
         return UniversalSlicedModel(layers=layers, metadata=parameters)
 

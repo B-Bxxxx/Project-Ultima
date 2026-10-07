@@ -53,20 +53,26 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
         valid_exteriors = []
 
+        # 1. Group rings into shells and holes
         for area, ring, poly in rings:
             is_hole = False
-            for i, ext_poly in enumerate(valid_exteriors):
+            for ext_poly, ext_ring, holes in valid_exteriors:
                 if ext_poly.contains(poly):
-                    try:
-                        valid_exteriors[i] = ext_poly.difference(poly)
-                        is_hole = True
-                        break
-                    except:
-                        pass
+                    holes.append(ring)
+                    is_hole = True
+                    break
             if not is_hole:
-                valid_exteriors.append(poly)
+                valid_exteriors.append((poly, ring, []))
 
-        valid_polygons = valid_exteriors
+        # 2. Build final polygons with holes explicit parameter
+        valid_polygons = []
+        for ext_poly, ext_ring, holes in valid_exteriors:
+            try:
+                p = sg.Polygon(shell=ext_ring, holes=holes)
+                if p.is_valid:
+                    valid_polygons.append(p)
+            except:
+                pass
 
         new_contours = []
         offset_dist = profile.nozzle_diameter
@@ -204,7 +210,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
                         current_contour = []
 
-                        # Use a greedy approach to traverse segments
+                        # Build contiguous zigzags
                         unvisited = list(infill_segments)
 
                         while unvisited:
