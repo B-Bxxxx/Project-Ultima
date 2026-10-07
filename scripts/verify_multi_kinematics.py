@@ -10,18 +10,15 @@ def main():
 
     os.makedirs("tests/output", exist_ok=True)
 
-    # 1. We create a 45-degree tilted plane toolpath so all axes (XYZBC) are engaged
-    # using the progressive tilt slicer on a simple cylinder
-    mesh = trimesh.creation.cylinder(radius=10, height=5)
-    mesh.apply_translation([0, 0, 2.5])
+    # 1. We create a complex conical toolpath so all axes (XYZBC) are engaged
+    # using the conical field slicer on a slightly taller cylinder for multiple layers
+    mesh = trimesh.creation.cylinder(radius=15, height=10)
+    mesh.apply_translation([0, 0, 5])
 
     slicer_cfg = {
-        "strategy": "progressive_tilt",
-        "layer_height": 5.0,
-        "start_z": 0.0,
-        "end_z": 5.0,
-        "start_tilt_deg": 45.0,
-        "end_tilt_deg": 45.0
+        "strategy": "conical",
+        "layer_height": 2.0,
+        "cone_angle_deg": 30.0
     }
     with open("tests/output/mk_slicer_cfg.json", "w") as f:
         json.dump(slicer_cfg, f)

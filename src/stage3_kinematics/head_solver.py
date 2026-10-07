@@ -90,7 +90,8 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             state = MachineStateVector(
                 x=float(P_mach[0]), y=float(P_mach[1]), z=float(P_mach[2]),
                 b=float(b_deg), c=float(c_deg),
-                extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move
+                extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
+                feature_type=wp.feature_type
             )
             states.append(state)
 
@@ -100,14 +101,33 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
 class Cartesian3AxisSolver(BaseKinematicSolver):
     """
     Standard 3-axis Cartesian machine solver.
+    Obeys standard XYZ moves, but logs warning if surface tilt exceeds machine limits.
     """
     def solve(self, trajectory: CLDataTrajectory, config: MachineConfig) -> MachineTrajectory:
         states = []
+        import logging
+        logger = logging.getLogger(__name__)
+
+        warned = False
+        max_tilt = config.max_3axis_tilt_deg
+
         for wp in trajectory.waypoints:
+            # Check tilt warning
+            norm = np.sqrt(wp.i**2 + wp.j**2 + wp.k**2)
+            if norm > 1e-6:
+                k = wp.k / norm
+                b_rad = np.arccos(np.clip(k, -1.0, 1.0))
+                b_deg = np.degrees(b_rad)
+                if b_deg > max_tilt and not warned:
+                    logger.warning(f"Toolpath surface normal tilt ({b_deg:.1f} deg) exceeds max_3axis_tilt_deg ({max_tilt} deg). Collision risk!")
+                    warned = True
+
             state = MachineStateVector(
                 x=wp.x, y=wp.y, z=wp.z,
                 b=0.0, c=0.0,
-                extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move
+                extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
+                feature_type=wp.feature_type
             )
             states.append(state)
+
         return MachineTrajectory(states=states)

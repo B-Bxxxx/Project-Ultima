@@ -21,7 +21,9 @@ def test_klipper_postproc():
     assert "G28 ; Home all axes" in gcode
 
     # Assert travel move (no E)
-    assert "G0 X10.000 Y10.000 Z5.000 B0.000 C0.000 F3000" in gcode
+    # The new template generates a sequence with Z-hop for travels:
+    assert "G1 E-0.800 F2400 ; Retract" in gcode
+    assert "G0 X10.000 Y10.000 Z5.400 B0.000 C0.000 F3000 ; Z-Hop Travel" in gcode
 
     # Assert extrude move (with E)
     area = math.pi * ((1.75/2.0)**2)

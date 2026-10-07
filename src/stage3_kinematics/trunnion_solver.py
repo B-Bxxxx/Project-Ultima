@@ -35,10 +35,17 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
         # Part orientation in machine coordinates: v_m = R_B(B) * R_C(C) * v_part
         # To align normal N=[I,J,K] to tool [0,0,1], N_m = R_B(B) * R_C(C) * N = [0,0,1]
         # This implies: N = R_C(-C) * R_B(-B) * [0,0,1]
-        # N = [ sin(B)*cos(C), -sin(B)*sin(C), cos(B) ]
-        # From this:
-        # I = sin(B)cos(C)
-        # J = -sin(B)sin(C)
+
+        # Note: R_B(-B) * [0,0,1] = [-sin(B), 0, cos(B)]
+        # R_C(-C) * [-sin(B), 0, cos(B)] =
+        # [ cos(-C)(-sin(B)) - sin(-C)(0),
+        #   sin(-C)(-sin(B)) + cos(-C)(0),
+        #   cos(B) ]
+        # = [ -cos(C)sin(B), sin(C)sin(B), cos(B) ]
+
+        # Therefore:
+        # I = -sin(B)cos(C)
+        # J = sin(B)sin(C)
         # K = cos(B)
 
         for wp in trajectory.waypoints:
@@ -53,15 +60,15 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
             b_deg = np.degrees(b_rad)
 
             # C is rotation.
-            # I = sin(B)cos(C) => cos(C) = I / sin(B)
-            # J = -sin(B)sin(C) => sin(C) = -J / sin(B)
-            # C = atan2(-J, I)
+            # I = -sin(B)cos(C) => cos(C) = -I / sin(B)
+            # J = sin(B)sin(C)  => sin(C) = J / sin(B)
+            # C = atan2(sin(C), cos(C)) = atan2(J, -I)
 
             # Singularity handling: if B is very small, C is arbitrary. We keep it as previous C.
             if abs(b_rad) < 1e-4:
                 c_rad = 0.0 if not raw_c_angles else raw_c_angles[-1]
             else:
-                c_rad = np.arctan2(-j, i)
+                c_rad = np.arctan2(j, -i)
 
             raw_c_angles.append(c_rad)
             b_angles.append(b_deg)
@@ -129,7 +136,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 c=float(c_deg),
                 extrusion_volume=wp.extrusion_volume,
                 feedrate=wp.feedrate,
-                is_travel_move=wp.is_travel_move
+                is_travel_move=wp.is_travel_move,
+                feature_type=wp.feature_type
             )
             states.append(state)
 

@@ -90,28 +90,29 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
             # Extract raw contours from intersection segments
             contours = self._process_trimesh_segments_to_contours(path_2d)
 
-            # 3. Inverse Mapping (Undeform points & evaluate normals)
-            undeformed_contours = []
-            for contour in contours:
-                undeformed_points = []
-                undeformed_normals = []
+            if contours:
+                # Store default normals on the raw boundary contour so Stage 1 tests continue passing
+                # (Stage 2 will evaluate the true normals for perimeter/infill generation anyway)
+                for contour in contours:
+                    undeformed_normals = []
+                    undeformed_pts = []
+                    thicknesses = []
+                    for pt in contour.points:
+                        u_pt = strategy.undeform_point(pt, layer_idx)
+                        norm = strategy.compute_normal(u_pt, layer_idx)
+                        thick = strategy.compute_thickness(u_pt, layer_idx)
+                        undeformed_pts.append(u_pt)
+                        undeformed_normals.append(norm)
+                        thicknesses.append(thick)
+                    contour.points = undeformed_pts
+                    contour.normals = undeformed_normals
+                    contour.thicknesses = thicknesses
+                    contour.feature_type = "boundary"
 
-                for pt in contour.points:
-                    u_pt = strategy.undeform_point(pt, layer_idx)
-                    norm = strategy.compute_normal(u_pt, layer_idx)
-
-                    undeformed_points.append(u_pt)
-                    undeformed_normals.append(norm)
-
-                undeformed_contours.append(SpatialContour(points=undeformed_points, normals=undeformed_normals))
-
-            if undeformed_contours:
-                # The z_height of the layer conceptually remains the slicing plane's nominal Z
                 z_nominal = plane_origin[2]
-                layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, contours=undeformed_contours))
+                layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, contours=contours))
 
-        return UniversalSlicedModel(layers=layers)
-
+        return UniversalSlicedModel(layers=layers, metadata=parameters)
 
     def _process_trimesh_segments_to_contours(self, segments: np.ndarray, default_normal: List[float] = [0, 0, 1]) -> List[SpatialContour]:
         """
