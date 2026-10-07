@@ -20,21 +20,32 @@ class PluginRegistry:
     @classmethod
     def get_plugin(cls, name: str) -> Type[BaseSlicerPlugin]:
         if name not in cls._plugins:
-            raise ValueError(f"Plugin '{name}' not found. Available: {list(cls._plugins.keys())}")
+            # Explicit imports for plugins inside get_plugin to fix auto-registration safely
+            import src.stage1_slicer.plugins.field_slicer
+            try:
+                import src.stage1_slicer.plugins.math_model
+            except ImportError:
+                pass
+            if name not in cls._plugins:
+                raise ValueError(f"Plugin '{name}' not found. Available: {list(cls._plugins.keys())}")
         return cls._plugins[name]
 
     @classmethod
     def get_all_plugins(cls) -> Dict[str, Type[BaseSlicerPlugin]]:
+        import src.stage1_slicer.plugins.field_slicer
+        try:
+            import src.stage1_slicer.plugins.math_model
+        except ImportError:
+            pass
         return cls._plugins
 
     @classmethod
     def discover_plugins(cls):
         """
-        Dynamically load all modules in the plugins package so they register themselves.
+        Explicitly imports built-in plugins instead of using pkgutil to avoid
+        compile-time and packaging issues (e.g. PyInstaller, Windows).
         """
-        package = src.stage1_slicer.plugins
-        for _, module_name, _ in pkgutil.iter_modules(package.__path__):
-            importlib.import_module(f"{package.__name__}.{module_name}")
+        import src.stage1_slicer.plugins.field_slicer
 
 # Auto-discover on module import
 PluginRegistry.discover_plugins()
