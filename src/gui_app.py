@@ -310,8 +310,11 @@ class MainWindow(QMainWindow):
                 num_perimeters=self.perims_spin.value(),
                 infill_density=self.infill_spin.value()
             )
+            # Deepcopy model before passing to Stage 2 because generate_toolpath mutates contours
+            import copy
+            model_for_s2 = copy.deepcopy(self.stage1_model)
             gen = StandardToolpathGenerator()
-            self.stage2_traj = gen.generate_toolpath(self.stage1_model, prof)
+            self.stage2_traj = gen.generate_toolpath(model_for_s2, prof)
 
             # Stage 3
             cfg = MachineConfig(
@@ -346,26 +349,28 @@ class MainWindow(QMainWindow):
     def _batch_lines_s2(self, waypoints, visible_types, layer_limit, profile):
         outer, inner, infill, travel = [], [], [], []
 
-        # Reconstruct layer index from z relative roughly to layer height
         last_wp = None
         for wp in waypoints:
-            # Simple heuristic for layer filtering
             idx = int(wp.z / profile.layer_height)
             if idx > layer_limit:
                 continue
 
             if last_wp is not None:
+                # To prevent drawing lines across travels for the same feature type
+                # we don't connect if the current point is the start of a travel
                 p1 = [last_wp.x, last_wp.y, last_wp.z]
                 p2 = [wp.x, wp.y, wp.z]
 
-                if wp.is_travel_move and "travel" in visible_types:
-                    travel.extend([p1, p2])
-                elif wp.feature_type == "outer_wall" and "outer_wall" in visible_types:
-                    outer.extend([p1, p2])
-                elif wp.feature_type == "inner_wall" and "inner_wall" in visible_types:
-                    inner.extend([p1, p2])
-                elif wp.feature_type == "infill" and "infill" in visible_types:
-                    infill.extend([p1, p2])
+                if wp.is_travel_move:
+                    if "travel" in visible_types:
+                        travel.extend([p1, p2])
+                else:
+                    if wp.feature_type == "outer_wall" and "outer_wall" in visible_types:
+                        outer.extend([p1, p2])
+                    elif wp.feature_type == "inner_wall" and "inner_wall" in visible_types:
+                        inner.extend([p1, p2])
+                    elif wp.feature_type == "infill" and "infill" in visible_types:
+                        infill.extend([p1, p2])
 
             last_wp = wp
 
@@ -378,10 +383,9 @@ class MainWindow(QMainWindow):
                 break
             for c in l.contours:
                 if c.feature_type == "boundary":
+                    # Connect points in pairs for 'lines' mode
                     for i in range(len(c.points)-1):
-                        p1 = c.points[i]
-                        p2 = c.points[i+1]
-                        lines.extend([p1, p2])
+                        lines.extend([c.points[i], c.points[i+1]])
         return lines
 
     def update_viewport(self):
@@ -400,8 +404,6 @@ class MainWindow(QMainWindow):
             f = self.mesh.faces
             mesh_item_solid = gl.GLMeshItem(vertexes=v, faces=f, color=(0.4, 0.4, 0.4, 0.6), smooth=True, drawEdges=True, edgeColor=(1.0, 1.0, 1.0, 0.5))
             self.gl_stage0.addItem(mesh_item_solid)
-
-            # Remove mesh from stage 1 and 2!
 
         limit = self.slider.value()
 

@@ -55,22 +55,18 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
         for area, ring, poly in rings:
             is_hole = False
-            for i, (ext_poly, ext_ring, holes) in enumerate(valid_exteriors):
+            for i, ext_poly in enumerate(valid_exteriors):
                 if ext_poly.contains(poly):
-                    holes.append(ring)
-                    is_hole = True
-                    break
+                    try:
+                        valid_exteriors[i] = ext_poly.difference(poly)
+                        is_hole = True
+                        break
+                    except:
+                        pass
             if not is_hole:
-                valid_exteriors.append((poly, ring, []))
+                valid_exteriors.append(poly)
 
-        valid_polygons = []
-        for poly, shell_ring, holes in valid_exteriors:
-            try:
-                p = sg.Polygon(shell=shell_ring, holes=holes)
-                if p.is_valid:
-                    valid_polygons.append(p)
-            except:
-                pass
+        valid_polygons = valid_exteriors
 
         new_contours = []
         offset_dist = profile.nozzle_diameter
@@ -159,9 +155,16 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     rad = m.radians(angle)
                     cos_a, sin_a = m.cos(rad), m.sin(rad)
 
-                    # Generate unrotated grid of lines covering the bounding box
-                    # We compute the bounding box of the rotated polygon first
-                    rot_coords = [(px*cos_a - py*sin_a, px*sin_a + py*cos_a) for px, py in current_poly.exterior.coords]
+                    # We compute the bounding box of the rotated polygon
+                    # Handle MultiPolygons safely
+                    if current_poly.geom_type == 'MultiPolygon':
+                        pts = []
+                        for geom in current_poly.geoms:
+                            pts.extend(list(geom.exterior.coords))
+                    else:
+                        pts = list(current_poly.exterior.coords)
+
+                    rot_coords = [(px*cos_a - py*sin_a, px*sin_a + py*cos_a) for px, py in pts]
                     minx_r = min(r[0] for r in rot_coords)
                     maxx_r = max(r[0] for r in rot_coords)
                     miny_r = min(r[1] for r in rot_coords)
