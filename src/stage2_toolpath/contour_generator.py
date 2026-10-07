@@ -40,7 +40,6 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 try:
                     ring = sg.LinearRing(pts_2d)
                     if ring.is_valid:
-                        # LinearRings don't have area, so we make them polygons temporarily to sort
                         poly = sg.Polygon(ring)
                         if poly.is_valid:
                             rings.append((poly.area, ring, poly))
@@ -50,31 +49,24 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         if not rings:
             return layer.contours
 
-        # Sort rings by area descending
         rings.sort(key=lambda r: r[0], reverse=True)
 
-        valid_polygons = []
-        used_as_hole = set()
+        valid_exteriors = []
 
-        for i, (area_i, ring_i, poly_i) in enumerate(rings):
-            if i in used_as_hole:
-                continue
+        for area, ring, poly in rings:
+            is_hole = False
+            for i, ext_poly in enumerate(valid_exteriors):
+                if ext_poly.contains(poly):
+                    try:
+                        valid_exteriors[i] = ext_poly.difference(poly)
+                        is_hole = True
+                        break
+                    except:
+                        pass
+            if not is_hole:
+                valid_exteriors.append(poly)
 
-            holes = []
-            for j in range(i + 1, len(rings)):
-                if j in used_as_hole:
-                    continue
-                area_j, ring_j, poly_j = rings[j]
-                if poly_i.contains(poly_j):
-                    holes.append(ring_j)
-                    used_as_hole.add(j)
-
-            try:
-                final_poly = sg.Polygon(shell=ring_i, holes=holes)
-                if final_poly.is_valid:
-                    valid_polygons.append(final_poly)
-            except:
-                pass
+        valid_polygons = valid_exteriors
 
         new_contours = []
         offset_dist = profile.nozzle_diameter
@@ -163,46 +155,63 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     rad = m.radians(angle)
                     cos_a, sin_a = m.cos(rad), m.sin(rad)
 
-                    # Instead of rotating bounding box and tracking `x_r` (which had issues),
-                    # let's create a large grid of lines based on the bounding box max diagonal and rotate the lines.
-                    diag = m.hypot(maxx - minx, maxy - miny)
-                    cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
+                    # Generate unrotated grid of lines covering the bounding box
+                    # We compute the bounding box of the rotated polygon first
+                    rot_coords = [(px*cos_a - py*sin_a, px*sin_a + py*cos_a) for px, py in current_poly.exterior.coords]
+                    minx_r = min(r[0] for r in rot_coords)
+                    maxx_r = max(r[0] for r in rot_coords)
+                    miny_r = min(r[1] for r in rot_coords)
+                    maxy_r = max(r[1] for r in rot_coords)
 
-                    x_start = cx - diag / 2
-                    x_end = cx + diag / 2
-                    y_start = cy - diag / 2
-                    y_end = cy + diag / 2
+                    x_r = minx_r + spacing / 2.0
+                    infill_segments = []
+                    while x_r < maxx_r:
+                        p1_x = x_r*cos_a + miny_r*sin_a
+                        p1_y = -x_r*sin_a + miny_r*cos_a
+                        p2_x = x_r*cos_a + maxy_r*sin_a
+                        p2_y = -x_r*sin_a + maxy_r*cos_a
 
-                    infill_lines = []
-                    x_r = x_start
-                    while x_r < x_end:
-                        # Unrotated vertical line
-                        p1_x, p1_y = x_r, y_start
-                        p2_x, p2_y = x_r, y_end
-
-                        # Rotate line around center
-                        dx1, dy1 = p1_x - cx, p1_y - cy
-                        dx2, dy2 = p2_x - cx, p2_y - cy
-
-                        rp1_x = cx + dx1*cos_a - dy1*sin_a
-                        rp1_y = cy + dx1*sin_a + dy1*cos_a
-
-                        rp2_x = cx + dx2*cos_a - dy2*sin_a
-                        rp2_y = cy + dx2*sin_a + dy2*cos_a
-
-                        line = sg.LineString([(rp1_x, rp1_y), (rp2_x, rp2_y)])
+                        line = sg.LineString([(p1_x, p1_y), (p2_x, p2_y)])
                         try:
                             inter = current_poly.intersection(line)
                             if inter.geom_type == 'LineString':
-                                infill_lines.append(inter)
+                                infill_segments.append(list(inter.coords))
                             elif inter.geom_type == 'MultiLineString':
-                                infill_lines.extend(list(inter.geoms))
+                                for l in inter.geoms:
+                                    infill_segments.append(list(l.coords))
                         except:
                             pass
                         x_r += spacing
 
-                    for line in infill_lines:
-                        add_contour(list(line.coords), "infill")
+                    # Now sort segments to form a zigzag path
+                    # We alternate endpoints
+                    if infill_segments:
+                        # Sort segments by the x_r value we swept, but since we created them in order,
+                        # they are mostly ordered already. We just need to alternate their direction.
+                        ordered_points = []
+                        flip = False
+                        current_contour = []
+                        for seg in infill_segments:
+                            if flip:
+                                seg = seg[::-1]
+
+                            # Join to previous contour if close enough
+                            if current_contour:
+                                dist = m.hypot(current_contour[-1][0] - seg[0][0], current_contour[-1][1] - seg[0][1])
+                                if dist <= spacing * 2.1:
+                                    # Join them
+                                    current_contour.extend(seg)
+                                else:
+                                    # Too far, finish current contour
+                                    add_contour(current_contour, "infill")
+                                    current_contour = seg
+                            else:
+                                current_contour = seg
+
+                            flip = not flip
+
+                        if current_contour:
+                            add_contour(current_contour, "infill")
 
         if not new_contours:
             return layer.contours

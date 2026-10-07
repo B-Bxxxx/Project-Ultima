@@ -109,8 +109,13 @@ class MainWindow(QMainWindow):
         self.trans_height_spin.setSingleStep(0.5)
         s1_layout.addRow("Transition H:", self.trans_height_spin)
 
+        self.expr_label = QLabel("Expression:")
         self.expr_input = QLineEdit("0.1 * x")
-        s1_layout.addRow("Expression:", self.expr_input)
+        self.expr_label.hide()
+        self.expr_input.hide()
+        s1_layout.addRow(self.expr_label, self.expr_input)
+
+        self.strategy_combo.currentTextChanged.connect(self.on_strategy_changed)
 
         left_layout.addWidget(QLabel("<b>2. Stage 1 Slicer</b>"))
         left_layout.addWidget(s1_group)
@@ -190,6 +195,13 @@ class MainWindow(QMainWindow):
         # --- RIGHT PANEL ---
         self.tabs = QTabWidget()
 
+        # Stage 0 GL
+        self.gl_stage0 = gl.GLViewWidget()
+        self.gl_stage0.opts['distance'] = 80
+        gx0 = gl.GLGridItem(); gx0.scale(5, 5, 1)
+        self.gl_stage0.addItem(gx0)
+        self.tabs.addTab(self.gl_stage0, "0. Stage 0 (Mesh)")
+
         # Stage 1 GL
         self.gl_stage1 = gl.GLViewWidget()
         self.gl_stage1.opts['distance'] = 80
@@ -218,6 +230,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.txt_gcode, "4. G-Code Preview")
 
         layout.addWidget(self.tabs)
+
+    def on_strategy_changed(self, text):
+        if text == "custom_expr":
+            self.expr_label.show()
+            self.expr_input.show()
+        else:
+            self.expr_label.hide()
+            self.expr_input.hide()
 
     def on_geom_changed(self):
         txt = self.geom_combo.currentText()
@@ -365,10 +385,12 @@ class MainWindow(QMainWindow):
         return lines
 
     def update_viewport(self):
+        self.gl_stage0.clear()
         self.gl_stage1.clear()
         self.gl_stage2.clear()
         self.gl_kine.clear()
 
+        gx0 = gl.GLGridItem(); gx0.scale(5, 5, 1); self.gl_stage0.addItem(gx0)
         gx1 = gl.GLGridItem(); gx1.scale(5, 5, 1); self.gl_stage1.addItem(gx1)
         gx2 = gl.GLGridItem(); gx2.scale(5, 5, 1); self.gl_stage2.addItem(gx2)
         gy = gl.GLGridItem(); gy.scale(5, 5, 1); self.gl_kine.addItem(gy)
@@ -376,6 +398,9 @@ class MainWindow(QMainWindow):
         if self.mesh:
             v = self.mesh.vertices
             f = self.mesh.faces
+            mesh_item_solid = gl.GLMeshItem(vertexes=v, faces=f, color=(0.4, 0.4, 0.4, 0.6), smooth=True)
+            self.gl_stage0.addItem(mesh_item_solid)
+
             for v_w in (self.gl_stage1, self.gl_stage2):
                 mesh_item = gl.GLMeshItem(vertexes=v, faces=f, color=(0.4, 0.4, 0.4, 0.1), smooth=True)
                 v_w.addItem(mesh_item)
