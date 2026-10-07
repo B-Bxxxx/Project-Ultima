@@ -193,29 +193,57 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     # Now sort segments to form a zigzag path
                     # We alternate endpoints
                     if infill_segments:
-                        # Sort segments by the x_r value we swept, but since we created them in order,
-                        # they are mostly ordered already. We just need to alternate their direction.
-                        ordered_points = []
-                        flip = False
+                        # Sort by their rotated x-coordinate (which is the orthogonal distance)
+                        def get_orthogonal_distance(seg):
+                            # The line equation is roughly x_r = px * cos_a + py * sin_a
+                            # We can just pick the first point
+                            px, py = seg[0]
+                            return px * cos_a + py * sin_a
+
+                        infill_segments.sort(key=get_orthogonal_distance)
+
                         current_contour = []
-                        for seg in infill_segments:
-                            if flip:
-                                seg = seg[::-1]
 
-                            # Join to previous contour if close enough
-                            if current_contour:
-                                dist = m.hypot(current_contour[-1][0] - seg[0][0], current_contour[-1][1] - seg[0][1])
-                                if dist <= spacing * 2.1:
-                                    # Join them
-                                    current_contour.extend(seg)
-                                else:
-                                    # Too far, finish current contour
-                                    add_contour(current_contour, "infill")
-                                    current_contour = seg
+                        # Use a greedy approach to traverse segments
+                        unvisited = list(infill_segments)
+
+                        while unvisited:
+                            if not current_contour:
+                                # Start a new contour with the first available segment
+                                current_contour = unvisited.pop(0)
                             else:
-                                current_contour = seg
+                                last_pt = current_contour[-1]
 
-                            flip = not flip
+                                # Find the closest segment endpoint among unvisited segments
+                                best_dist = float('inf')
+                                best_idx = -1
+                                best_seg_oriented = None
+
+                                # Only look at nearby segments to maintain rectilinear pattern
+                                # We assume they are roughly sorted by orthogonal distance
+                                search_limit = min(10, len(unvisited))
+                                for i in range(search_limit):
+                                    seg = unvisited[i]
+                                    d1 = m.hypot(last_pt[0] - seg[0][0], last_pt[1] - seg[0][1])
+                                    d2 = m.hypot(last_pt[0] - seg[-1][0], last_pt[1] - seg[-1][1])
+
+                                    if d1 < best_dist:
+                                        best_dist = d1
+                                        best_idx = i
+                                        best_seg_oriented = seg
+                                    if d2 < best_dist:
+                                        best_dist = d2
+                                        best_idx = i
+                                        best_seg_oriented = seg[::-1]
+
+                                if best_dist <= spacing * 2.1:
+                                    # Join them!
+                                    current_contour.extend(best_seg_oriented)
+                                    unvisited.pop(best_idx)
+                                else:
+                                    # Too far, finish this contour
+                                    add_contour(current_contour, "infill")
+                                    current_contour = []
 
                         if current_contour:
                             add_contour(current_contour, "infill")
