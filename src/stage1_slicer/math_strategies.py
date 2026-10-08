@@ -149,10 +149,11 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
         w = self.get_blend_weight(zp)
-        # Actually tilt strategy just shifts points if pivoting, but we keep pt mapping simple:
-        # Since undeform_point is pass-through for progressive tilt in this simple geometric model,
-        # blend weight doesn't affect coordinates, just normals
-        return pt
+        tilt = self._get_tilt_for_layer(layer_idx)
+        # Progressive tilt deforms by pivoting around pivot_y
+        rad = y - self.pivot_y
+        real_z = zp - w * rad * np.tan(tilt)
+        return (float(x), float(y), float(real_z))
 
     def compute_normal(self, undeformed_pt: Tuple[float, float, float], layer_idx: int):
         tilt = self._get_tilt_for_layer(layer_idx)
