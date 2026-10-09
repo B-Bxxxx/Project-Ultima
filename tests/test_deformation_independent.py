@@ -16,18 +16,31 @@ def test_cone_normal_outward():
 
     nx, ny, nz = strat.compute_normal((x, y, z), layer_idx=5)
 
-    r = np.sqrt(x**2 + y**2)
-    expected_nx = (x/r) * np.tan(alpha)
-    expected_ny = (y/r) * np.tan(alpha)
+    # Independent finite-difference check
+    eps = 1e-5
+    def f_cone(px, py):
+        return np.sqrt(px**2 + py**2) * np.tan(alpha)
 
-    length = np.sqrt(expected_nx**2 + expected_ny**2 + 1.0)
+    # Surface is z = c - f(x,y). Upward normal is (+f_x, +f_y, 1) normalized
+    f0 = f_cone(x, y)
+    fx = f_cone(x + eps, y)
+    fy = f_cone(x, y + eps)
+
+    df_dx = (fx - f0) / eps
+    df_dy = (fy - f0) / eps
+
+    expected_nx = df_dx
+    expected_ny = df_dy
+    expected_nz = 1.0
+
+    length = np.sqrt(expected_nx**2 + expected_ny**2 + expected_nz**2)
     expected_nx /= length
     expected_ny /= length
-    expected_nz = 1.0 / length
+    expected_nz /= length
 
-    assert nx == pytest.approx(expected_nx, abs=1e-5)
-    assert ny == pytest.approx(expected_ny, abs=1e-5)
-    assert nz == pytest.approx(expected_nz, abs=1e-5)
+    assert nx == pytest.approx(expected_nx, abs=1e-4)
+    assert ny == pytest.approx(expected_ny, abs=1e-4)
+    assert nz == pytest.approx(expected_nz, abs=1e-4)
 
     assert nx > 0
     assert ny > 0
@@ -77,11 +90,12 @@ def test_mesh_refinement_analytic_surface():
         "end_z": 20.0,
         "transition_height": 0.0,
         "refine_mesh": True,
-        "refine_max_edge": 2.0
+        "refine_fraction": 1.0 / 15.0
     })
 
     deformed = strat.deform_mesh()
 
+    # Due to refinement, there should be vertices near x=15
     x_target = 15.0
     tol = 0.5
 

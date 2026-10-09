@@ -57,7 +57,7 @@ def test_progressive_tilt_mode(slicer, test_mesh):
     c1 = model.layers[1].contours[0]
     n1 = c1.normals[0]
     assert n1[0] == pytest.approx(0.0)
-    assert n1[1] == pytest.approx(np.sin(np.radians(45)))
+    assert n1[1] == pytest.approx(-np.sin(np.radians(45)))
     assert n1[2] == pytest.approx(np.cos(np.radians(45)))
 
 def test_conical_mode(slicer, test_mesh):

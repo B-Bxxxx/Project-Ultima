@@ -41,6 +41,21 @@ class BaseSlicingStrategy(ABC):
         """Computes the analytical or numerical gradient surface normal at the undeformed point."""
         pass
 
+    def _refine_mesh(self, max_edge: float = None):
+        import trimesh.remesh
+        if max_edge is None:
+            max_edge = getattr(self, "layer_height", 0.2) * 2.0  # reasonable default
+
+        vertices, faces = trimesh.remesh.subdivide_to_size(
+            self.mesh.vertices,
+            self.mesh.faces,
+            max_edge=max_edge,
+            max_iter=10
+        )
+        if len(vertices) > 500_000:
+            raise ValueError(f"Mesh refinement produced too many vertices: {len(vertices)}")
+        self.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+        self.deformed = self.mesh.copy()
     def _solve_forward_z(self, z, f_val):
         import numpy as np
         z_prime = z.copy() if hasattr(z, 'copy') else z
@@ -67,22 +82,6 @@ class BaseSlicingStrategy(ABC):
                     return new_z_prime
                 z_prime = new_z_prime
             return z_prime
-
-    def _refine_mesh(self, max_edge: float = None):
-        import trimesh.remesh
-        if max_edge is None:
-            max_edge = getattr(self, "layer_height", 0.2) * 2.0  # reasonable default
-
-        vertices, faces = trimesh.remesh.subdivide_to_size(
-            self.mesh.vertices,
-            self.mesh.faces,
-            max_edge=max_edge,
-            max_iter=10
-        )
-        if len(vertices) > 500_000:
-            raise ValueError(f"Mesh refinement produced too many vertices: {len(vertices)}")
-        self.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-        self.deformed = self.mesh.copy()
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
         """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
         return getattr(self, "layer_height", 0.2)
@@ -103,8 +102,12 @@ class PlanarStrategy(BaseSlicingStrategy):
         super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
-        end_z = params.get("end_z", self.mesh.bounds[1, 2])
+        if len(self.mesh.vertices) > 0:
+            self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+            end_z = params.get("end_z", self.mesh.bounds[1, 2])
+        else:
+            self.start_z = params.get("start_z", 0.0)
+            end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
     def get_layer_count(self) -> int:
@@ -129,15 +132,22 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
-        end_z = params.get("end_z", self.mesh.bounds[1, 2])
+        if len(self.mesh.vertices) > 0:
+            self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+            end_z = params.get("end_z", self.mesh.bounds[1, 2])
+        else:
+            self.start_z = params.get("start_z", 0.0)
+            end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
 
         # Determine pivot center (to prevent negative Z folding)
         # Default to pivoting around the inner Y edge (min y)
-        self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
+        if len(self.mesh.vertices) > 0:
+            self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
+        else:
+            self.pivot_y = params.get("pivot_y", 0.0)
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -195,7 +205,7 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         x, y, z = undeformed_pt
         w = self.get_blend_weight(self.start_z + layer_idx * self.layer_height)
 
-        n_x, n_y, n_z = 0.0, float(np.sin(tilt)), float(np.cos(tilt))
+        n_x, n_y, n_z = 0.0, float(-np.sin(tilt)), float(np.cos(tilt))
 
         # Blend with flat [0, 0, 1]
         n_x = w * n_x
@@ -216,8 +226,8 @@ class ConicalStrategy(BaseSlicingStrategy):
 
         # Precompute deformed mesh
         if params.get("refine_mesh", True) and len(self.mesh.vertices) > 0:
-            max_ext = self.mesh.extents.max() if self.mesh.extents is not None else 10.0
-            self._refine_mesh(max_edge=max_ext / 10.0)
+            wavelength = params.get("feature_scale", self.mesh.extents.max() if self.mesh.extents is not None else 10.0)
+            self._refine_mesh(max_edge=wavelength * params.get("refine_fraction", 1.0/8.0))
         else:
             self.deformed = self.mesh.copy()
         self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
@@ -227,6 +237,7 @@ class ConicalStrategy(BaseSlicingStrategy):
             self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
+            self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
@@ -305,13 +316,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         self.safe_dict = {"np": np, "math": __import__("math"), "__builtins__": {}}
 
         # Precompute deformed mesh
-        if params.get("refine_mesh", True) and len(self.mesh.vertices) > 0:
-            # We estimate wavelength from expression or default to extents
-            wavelength = params.get("feature_scale", 16.0) # default heuristic
-            refine_fraction = params.get("refine_fraction", 1.0 / 8.0)
-            self._refine_mesh(max_edge=wavelength * refine_fraction)
-        else:
-            self.deformed = self.mesh.copy()
+        self.deformed = self.mesh.copy()
         self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
             x = self.deformed.vertices[:, 0]
@@ -320,6 +325,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
             self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
+            self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
@@ -377,16 +383,11 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         self.layer_height = params.get("layer_height", 0.2)
 
         # Precompute deformed mesh
-        # External scalar field should NOT be subdivided automatically because vertex_deformations array size would mismatch
-        # UNLESS we interpolate the external field during subdivision, which is complex.
-        # So we skip subdivision for external fields unless explicitly requested.
         self.deformed = self.mesh.copy()
-        self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
-        if len(self.deformed.vertices) > 0 and len(self.deformed.vertices) == len(self.vertex_deformations):
-            self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], self.vertex_deformations)
-            end_z = params.get("end_z", self.deformed.bounds[1, 2])
-        else:
-            end_z = params.get("end_z", 10.0)
+        self.deformed.vertices[:, 2] += self.vertex_deformations
+
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+        end_z = params.get("end_z", self.deformed.bounds[1, 2])
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
         # Setup for pure Numpy IDW (Inverse Distance Weighting) interpolation
