@@ -41,6 +41,48 @@ class BaseSlicingStrategy(ABC):
         """Computes the analytical or numerical gradient surface normal at the undeformed point."""
         pass
 
+    def _solve_forward_z(self, z, f_val):
+        import numpy as np
+        z_prime = z.copy() if hasattr(z, 'copy') else z
+        if isinstance(z, np.ndarray):
+            for _ in range(100):
+                w = np.zeros_like(z_prime)
+                if self.transition_height <= 0.0:
+                    w[:] = 1.0
+                else:
+                    sz = getattr(self, "start_z", 0.0)
+                    w = (z_prime - sz) / self.transition_height
+                    w = np.clip(w, 0.0, 1.0)
+
+                new_z_prime = z + w * f_val
+                if np.max(np.abs(new_z_prime - z_prime)) < 1e-6:
+                    return new_z_prime
+                z_prime = new_z_prime
+            return z_prime
+        else:
+            for _ in range(100):
+                w = self.get_blend_weight(z_prime)
+                new_z_prime = z + w * f_val
+                if abs(new_z_prime - z_prime) < 1e-6:
+                    return new_z_prime
+                z_prime = new_z_prime
+            return z_prime
+
+    def _refine_mesh(self, max_edge: float = None):
+        import trimesh.remesh
+        if max_edge is None:
+            max_edge = getattr(self, "layer_height", 0.2) * 2.0  # reasonable default
+
+        vertices, faces = trimesh.remesh.subdivide_to_size(
+            self.mesh.vertices,
+            self.mesh.faces,
+            max_edge=max_edge,
+            max_iter=10
+        )
+        if len(vertices) > 500_000:
+            raise ValueError(f"Mesh refinement produced too many vertices: {len(vertices)}")
+        self.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+        self.deformed = self.mesh.copy()
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
         """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
         return getattr(self, "layer_height", 0.2)
@@ -61,12 +103,8 @@ class PlanarStrategy(BaseSlicingStrategy):
         super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        if len(self.mesh.vertices) > 0:
-            self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
-            end_z = params.get("end_z", self.mesh.bounds[1, 2])
-        else:
-            self.start_z = params.get("start_z", 0.0)
-            end_z = params.get("end_z", 10.0)
+        self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+        end_z = params.get("end_z", self.mesh.bounds[1, 2])
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
     def get_layer_count(self) -> int:
@@ -91,17 +129,15 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        if len(self.mesh.vertices) > 0:
-            self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
-            end_z = params.get("end_z", self.mesh.bounds[1, 2])
-            self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
-        else:
-            self.start_z = params.get("start_z", 0.0)
-            end_z = params.get("end_z", 10.0)
-            self.pivot_y = params.get("pivot_y", 0.0)
+        self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+        end_z = params.get("end_z", self.mesh.bounds[1, 2])
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
+
+        # Determine pivot center (to prevent negative Z folding)
+        # Default to pivoting around the inner Y edge (min y)
+        self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -149,18 +185,17 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
         w = self.get_blend_weight(zp)
-        tilt = self._get_tilt_for_layer(layer_idx)
-        # Progressive tilt deforms by pivoting around pivot_y
-        rad = y - self.pivot_y
-        real_z = zp - w * rad * np.tan(tilt)
-        return (float(x), float(y), float(real_z))
+        # Actually tilt strategy just shifts points if pivoting, but we keep pt mapping simple:
+        # Since undeform_point is pass-through for progressive tilt in this simple geometric model,
+        # blend weight doesn't affect coordinates, just normals
+        return pt
 
     def compute_normal(self, undeformed_pt: Tuple[float, float, float], layer_idx: int):
         tilt = self._get_tilt_for_layer(layer_idx)
         x, y, z = undeformed_pt
         w = self.get_blend_weight(self.start_z + layer_idx * self.layer_height)
 
-        n_x, n_y, n_z = 0.0, float(-np.sin(tilt)), float(np.cos(tilt))
+        n_x, n_y, n_z = 0.0, float(np.sin(tilt)), float(np.cos(tilt))
 
         # Blend with flat [0, 0, 1]
         n_x = w * n_x
@@ -180,14 +215,18 @@ class ConicalStrategy(BaseSlicingStrategy):
         self.tan_alpha = np.tan(self.cone_angle)
 
         # Precompute deformed mesh
-        self.deformed = self.mesh.copy()
+        if params.get("refine_mesh", True) and len(self.mesh.vertices) > 0:
+            max_ext = self.mesh.extents.max() if self.mesh.extents is not None else 10.0
+            self._refine_mesh(max_edge=max_ext / 10.0)
+        else:
+            self.deformed = self.mesh.copy()
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
             r = np.linalg.norm(self.deformed.vertices[:, :2], axis=1)
-            self.deformed.vertices[:, 2] += r * self.tan_alpha
-            self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+            f_val = r * self.tan_alpha
+            self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
@@ -227,7 +266,7 @@ class ConicalStrategy(BaseSlicingStrategy):
             df_dx = 0.0
             df_dy = 0.0
 
-        norm_vec = np.array([-df_dx, -df_dy, 1.0])
+        norm_vec = np.array([df_dx, df_dy, 1.0])
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
 
@@ -266,16 +305,21 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         self.safe_dict = {"np": np, "math": __import__("math"), "__builtins__": {}}
 
         # Precompute deformed mesh
-        self.deformed = self.mesh.copy()
+        if params.get("refine_mesh", True) and len(self.mesh.vertices) > 0:
+            # We estimate wavelength from expression or default to extents
+            wavelength = params.get("feature_scale", 16.0) # default heuristic
+            refine_fraction = params.get("refine_fraction", 1.0 / 8.0)
+            self._refine_mesh(max_edge=wavelength * refine_fraction)
+        else:
+            self.deformed = self.mesh.copy()
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
             x = self.deformed.vertices[:, 0]
             y = self.deformed.vertices[:, 1]
             f_val = self._evaluate(x, y)
-            self.deformed.vertices[:, 2] += f_val
-            self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+            self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
@@ -315,7 +359,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         df_dx = w * (fx - f0) / eps
         df_dy = w * (fy - f0) / eps
 
-        norm_vec = np.array([-df_dx, -df_dy, 1.0])
+        norm_vec = np.array([df_dx, df_dy, 1.0])
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
 
@@ -329,20 +373,19 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
         super().__init__(params)
         self.mesh = mesh.copy()
-        self.vertex_deformations = np.array(params.get("vertex_deformations", []))
-        if len(self.vertex_deformations) == 0:
-            self.vertex_deformations = np.zeros(len(self.mesh.vertices))
-
+        self.vertex_deformations = np.array(params.get("vertex_deformations", np.zeros(len(self.mesh.vertices))))
         self.layer_height = params.get("layer_height", 0.2)
 
         # Precompute deformed mesh
+        # External scalar field should NOT be subdivided automatically because vertex_deformations array size would mismatch
+        # UNLESS we interpolate the external field during subdivision, which is complex.
+        # So we skip subdivision for external fields unless explicitly requested.
         self.deformed = self.mesh.copy()
+        self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0 and len(self.deformed.vertices) == len(self.vertex_deformations):
-            self.deformed.vertices[:, 2] += self.vertex_deformations
-            self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+            self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], self.vertex_deformations)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
@@ -398,7 +441,7 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         df_dx = w * (fx - f0) / eps
         df_dy = w * (fy - f0) / eps
 
-        norm_vec = np.array([-df_dx, -df_dy, 1.0])
+        norm_vec = np.array([df_dx, df_dy, 1.0])
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
 

@@ -16,17 +16,14 @@ class MinimalPrintProfile(BaseModel):
     Minimal standard print profile for essential FDM parameters.
     """
     wall_count: int = Field(2, description="Number of perimeters")
-    num_perimeters: int = Field(2, description="Number of perimeters (alias for wall_count)")
     bottom_solid_layers: int = Field(3, description="Number of solid bottom layers")
     top_solid_layers: int = Field(3, description="Number of solid top layers")
-    infill_density: float = Field(0.2, description="Infill percentage (0-100)")
+    infill_density: float = Field(15.0, description="Infill percentage (0-100)")
     infill_pattern: str = Field("grid", description="Infill pattern (e.g., grid, lines, none)")
-    infill_angle_deg: float = Field(45.0, description="Angle of infill in degrees")
     nozzle_diameter: float = Field(0.4, description="Nozzle diameter in mm")
     layer_height: float = Field(0.2, description="Layer height in mm")
     continuous_spiral: bool = Field(False, description="True if continuous single-wall spiral/vase mode")
     filament_diameter: float = Field(1.75, description="Filament diameter in mm")
-    max_segment_length: float = Field(1.0, description="Maximum length of a segment for surface conformity")
     include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
     retract_distance: float = Field(0.8, description="Retraction distance in mm for travel moves")
     z_hop: float = Field(0.4, description="Z-hop height in mm during travel moves")
@@ -38,7 +35,7 @@ class SpatialContour(BaseModel):
     points: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (X, Y, Z) coordinates")
     normals: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (I, J, K) surface normals corresponding to the points")
     thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
-    feature_type: str = Field("boundary", description="Type of feature: boundary, outer_wall, inner_wall, or infill")
+    feature_type: str = Field("outer_wall", description="Type of feature: outer_wall, inner_wall, or infill")
 
 class UniversalLayer(BaseModel):
     """
@@ -47,7 +44,6 @@ class UniversalLayer(BaseModel):
     """
     layer_index: int = Field(..., description="Index of this layer")
     z_height: float = Field(..., description="Nominal Z height of the layer")
-    z_prime: Optional[float] = Field(None, description="Deformed Z space height (if applicable)")
     contours: List[SpatialContour] = Field(..., description="List of spatial contours forming this layer")
 
 class UniversalSlicedModel(BaseModel):
@@ -56,7 +52,6 @@ class UniversalSlicedModel(BaseModel):
     Stage 1 -> Stage 2 contract.
     """
     layers: List[UniversalLayer] = Field(..., description="List of universal layers")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata containing parameters used during slicing")
 
     def to_json_file(self, path: str) -> None:
         with open(path, 'w') as f:

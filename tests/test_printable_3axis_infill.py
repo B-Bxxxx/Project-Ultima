@@ -37,6 +37,21 @@ def test_printable_3axis_infill_and_transition():
             assert n[1] == pytest.approx(0.0, abs=1e-5)
             assert n[2] == pytest.approx(1.0, abs=1e-5)
 
+    # Assert feature tags are present
+    feature_types = set()
+    for contour in sliced_model.layers[-1].contours:
+        feature_types.add(contour.feature_type)
+    assert "outer_wall" in feature_types
+    assert "inner_wall" in feature_types
+    assert "infill" in feature_types
+
+    # Assert layers above transition are curved
+    layer_top = sliced_model.layers[-1]
+    z_coords = []
+    for contour in layer_top.contours:
+        z_coords.extend([p[2] for p in contour.points])
+    assert max(z_coords) - min(z_coords) > 2.0 # Proves it deformed!
+
     profile = MinimalPrintProfile(
         layer_height=2.0,
         nozzle_diameter=0.4,
@@ -46,20 +61,6 @@ def test_printable_3axis_infill_and_transition():
     )
     generator = StandardToolpathGenerator()
     traj = generator.generate_toolpath(sliced_model, profile)
-
-    # Assert feature tags are present
-    feature_types = set()
-    for wp in traj.waypoints:
-        feature_types.add(wp.feature_type)
-    assert "outer_wall" in feature_types
-    assert "infill" in feature_types
-
-    # Assert layers above transition are curved
-    layer_top = sliced_model.layers[-1]
-    z_coords = []
-    for contour in layer_top.contours:
-        z_coords.extend([p[2] for p in contour.points])
-    assert max(z_coords) - min(z_coords) > 2.0 # Proves it deformed!
 
     config = MachineConfig(
         kinematic_chain="Cartesian",

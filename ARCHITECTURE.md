@@ -50,7 +50,7 @@ All inter-stage data exchanges are strongly typed using Pydantic in `src/common/
 
 | Interface | Command | Description |
 | --- | --- | --- |
-| **Interactive GUI** | `PyQt6 run src/ui_app.py` | Web-based interface to generate/upload meshes, configure slicing/kinematics parameters, preview 3D layers/toolpaths via Plotly, and download G-code. |
+| **Interactive GUI** | `streamlit run src/ui_app.py` | Web-based interface to generate/upload meshes, configure slicing/kinematics parameters, preview 3D layers/toolpaths via Plotly, and download G-code. |
 | **CLI Runner** | `python3 src/pipeline_cli.py run-all` | Headless execution of all stages sequentially using JSON configs. |
 
 ## Validation & Test Matrix

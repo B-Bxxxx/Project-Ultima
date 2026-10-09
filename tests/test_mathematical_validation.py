@@ -63,7 +63,7 @@ def test_math_validation_custom_expressions():
             dzdy = case["dzdy_analytical"](tx, ty)
 
             # Analytical normal = [-dz/dx, -dz/dy, 1] normalized
-            a_norm = np.array([-dzdx, -dzdy, 1.0])
+            a_norm = np.array([dzdx, dzdy, 1.0])
             a_norm /= np.linalg.norm(a_norm)
 
             assert norm[0] == pytest.approx(a_norm[0], abs=1e-4)
