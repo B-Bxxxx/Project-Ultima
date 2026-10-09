@@ -74,15 +74,21 @@ def test_conical_mode(slicer, test_mesh):
     # Due to deform slicing, the number of layers might be less, but at least 1 should exist
     assert len(model.layers) > 0
     contour = model.layers[0].contours[0]
-    # Grab a point roughly on the positive X axis
+
+    alpha = np.radians(30.0)
     for pt, norm in zip(contour.points, contour.normals):
         # f(x,y) = r * tan(alpha)
-        # Normal gradient = [-x/r tan(alpha), -y/r tan(alpha), 1] normalized
+        # Normal gradient = [+x/r tan(alpha), +y/r tan(alpha), 1] normalized
+        x, y, z = pt
+        r = np.sqrt(x**2 + y**2)
+        if r > 1e-6:
+            expected_nx = (x / r) * np.tan(alpha)
+            expected_ny = (y / r) * np.tan(alpha)
+            length = np.sqrt(expected_nx**2 + expected_ny**2 + 1.0)
+            expected_nx /= length
+            expected_ny /= length
+            expected_nz = 1.0 / length
 
-        # We just verify that normals are not purely vertical
-        assert norm[2] < 1.0
-        assert norm[2] > 0.0
-
-        # Verify normalization
-        length = np.linalg.norm(norm)
-        assert length == pytest.approx(1.0)
+            assert norm[0] == pytest.approx(expected_nx, abs=1e-5)
+            assert norm[1] == pytest.approx(expected_ny, abs=1e-5)
+            assert norm[2] == pytest.approx(expected_nz, abs=1e-5)
