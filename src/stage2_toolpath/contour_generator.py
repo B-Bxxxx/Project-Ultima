@@ -88,9 +88,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
             for x, y in subdivided_coords:
                 if strategy:
-                    z_prime = layer.z_prime if hasattr(layer, "z_prime") and layer.z_prime is not None else layer.z_height
-                    layer_idx = int(round((z_prime - strategy.start_z) / strategy.layer_height))
-                    pt_3d = strategy.undeform_point((x, y, z_prime), layer_idx)
+                    # Use the layer's own index (Stage 1 skips empty layers, so it is
+                    # authoritative) instead of re-deriving it from z / layer_height.
+                    layer_idx = layer.layer_index
+                    pt_3d = strategy.project_to_layer(x, y, layer_idx)
                     norm = strategy.compute_normal(pt_3d, layer_idx)
                     thick = strategy.compute_thickness(pt_3d, layer_idx)
                 else:
@@ -266,39 +267,29 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             # But the math strategies don't actually need the mesh *if* we only call undeform/compute.
             # We can recreate it with an empty mesh just for math.
             import trimesh
-            from src.stage1_slicer.math_strategies import (
-                PlanarStrategy, ProgressiveTiltStrategy, ConicalStrategy,
-                CustomExpressionStrategy, ExternalScalarFieldStrategy
-            )
-            dummy_mesh = trimesh.Trimesh()
-            if strat_name == "progressive_tilt":
-                strategy = ProgressiveTiltStrategy(dummy_mesh, model.metadata)
-            elif strat_name == "custom_expr":
-                strategy = CustomExpressionStrategy(dummy_mesh, model.metadata)
-            elif strat_name == "conical" or strat_name == "conical_or_curved":
-                strategy = ConicalStrategy(dummy_mesh, model.metadata)
-            elif strat_name == "external_field":
-                strategy = ExternalScalarFieldStrategy(dummy_mesh, model.metadata)
+            from src.stage1_slicer.math_strategies import build_strategy
+            # The metadata holds the RESOLVED parameters written by Stage 1, so an empty
+            # mesh is enough: the strategies only need their math here.
+            strategy = build_strategy(strat_name, trimesh.Trimesh(), model.metadata)
 
-                # Rebuild IDW from ALL layer boundaries
+            if strat_name == "external_field":
+                # Rebuild the IDW field from ALL layer boundaries
                 import numpy as np
                 pts_2d = []
                 vertex_deformations = []
                 for lyr in model.layers:
+                    z_prime = lyr.z_prime if lyr.z_prime is not None else lyr.z_height
+                    w = strategy.get_blend_weight(z_prime)
+                    if w <= 1e-6:
+                        continue
                     for contour in lyr.contours:
-                        for idx, pt in enumerate(contour.points):
-                            z_prime = lyr.z_prime if hasattr(lyr, "z_prime") and lyr.z_prime is not None else lyr.z_height
-                            w = strategy.get_blend_weight(z_prime) if hasattr(strategy, 'get_blend_weight') else 1.0
-                            if w > 1e-6:
-                                f_val = (z_prime - pt[2]) / w
-                                pts_2d.append([pt[0], pt[1]])
-                                vertex_deformations.append(f_val)
+                        for pt in contour.points:
+                            pts_2d.append([pt[0], pt[1]])
+                            vertex_deformations.append((z_prime - pt[2]) / w)
 
                 if pts_2d:
                     strategy.pts_2d = np.array(pts_2d)
                     strategy.vertex_deformations = np.array(vertex_deformations)
-            else:
-                strategy = PlanarStrategy(dummy_mesh, model.metadata)
 
         for layer in model.layers:
             layer.contours = self._generate_2d_features(layer, profile, strategy)

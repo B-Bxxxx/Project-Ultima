@@ -4,10 +4,7 @@ from typing import List, Any, Dict, Optional
 from src.common.schemas import SlicerPluginParameterSchema, UniversalLayer, SpatialContour, UniversalSlicedModel
 from src.stage1_slicer.base import BaseSlicerPlugin
 from src.stage1_slicer.registry import PluginRegistry
-from src.stage1_slicer.math_strategies import (
-    PlanarStrategy, ProgressiveTiltStrategy, ConicalStrategy,
-    CustomExpressionStrategy, ExternalScalarFieldStrategy
-)
+from src.stage1_slicer.math_strategies import build_strategy
 
 @PluginRegistry.register("universal_field_slicer")
 class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
@@ -58,18 +55,15 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
         strategy_name = parameters.get("strategy", parameters.get("mode", "planar"))
 
         # Load the selected mathematical strategy
-        if strategy_name == "planar":
-            strategy = PlanarStrategy(geometry, parameters)
-        elif strategy_name == "progressive_tilt":
-            strategy = ProgressiveTiltStrategy(geometry, parameters)
-        elif strategy_name == "conical" or strategy_name == "conical_or_curved":
-            strategy = ConicalStrategy(geometry, parameters)
-        elif strategy_name == "custom_expr":
-            strategy = CustomExpressionStrategy(geometry, parameters)
-        elif strategy_name == "external_field":
-            strategy = ExternalScalarFieldStrategy(geometry, parameters)
-        else:
-            raise ValueError(f"Unknown strategy: {strategy_name}")
+        strategy = build_strategy(strategy_name, geometry, parameters)
+
+        # Metadata = input parameters + the RESOLVED values (mesh-derived start_z,
+        # end_z, pivot_y, ...), so Stage 2 rebuilds the strategy identically.
+        # Large numpy fields (vertex_deformations) are NOT stored: Stage 2 rebuilds
+        # them from the layer contours, and numpy arrays are not JSON-serializable.
+        metadata = {k: v for k, v in parameters.items() if k != "vertex_deformations"}
+        metadata["strategy"] = strategy_name
+        metadata.update(strategy.get_resolved_params())
 
         layers = []
 
@@ -112,7 +106,7 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                 z_nominal = plane_origin[2]
                 layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, contours=contours))
 
-        return UniversalSlicedModel(layers=layers, metadata=parameters)
+        return UniversalSlicedModel(layers=layers, metadata=metadata)
 
     def _process_trimesh_segments_to_contours(self, segments: np.ndarray, default_normal: List[float] = [0, 0, 1]) -> List[SpatialContour]:
         """
