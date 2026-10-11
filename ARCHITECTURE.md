@@ -36,6 +36,7 @@ All inter-stage data exchanges are strongly typed using Pydantic in `src/common/
 | `progressive_tilt` | Linearly tilts normal around X axis across layers. | `start_tilt_deg`, `end_tilt_deg` |
 | `conical` | Deform-Slice-Undeform for support-free overhangs ($z' = z + r \cdot \tan\alpha$) | `cone_angle_deg` |
 | `custom_expr` | Deform-Slice-Undeform of $f(x, y)$. The expression is validated against an AST whitelist (`src/stage1_slicer/safe_expr.py`), never evaluated blindly. | `expression` |
+| `grid_field` | Same deform-slice-undeform as `custom_expr`, but f(x, y) is a regular grid (imported from a data file, bilinear interpolation, clamped outside). All parameters are plain lists, so they travel through the JSON metadata to Stage 2. | `grid_x`, `grid_y`, `grid_values` (`len(grid_y)` rows of `len(grid_x)` values) |
 | `external_field` | Point cloud spatial interpolation (pure Numpy IDW) | `vertex_deformations` array or list (not stored in the JSON metadata; Stage 2 rebuilds the field from the layer contours) |
 
 Every strategy implements the same interface used by Stage 1 **and** Stage 2 (`build_strategy(name, mesh, params)` is the single factory; Stage 2 passes an empty mesh and the resolved metadata):
@@ -46,6 +47,14 @@ Every strategy implements the same interface used by Stage 1 **and** Stage 2 (`b
 | `project_to_layer(x, y, layer_idx)` | Lifts a 2D point of a layer to its true 3D position. Planar/deforming strategies use `undeform_point` at `z' = start_z + idx*h`; `progressive_tilt` returns the point on the tilted plane `z = z0 + (y - pivot_y) tan(t)`. |
 | `compute_normal`, `compute_thickness` | Normal and local layer thickness at a 3D point. |
 | `_solve_forward_z(z, f)` | Solves `z' = z + w(z') f` (fixed point); raises `ValueError` with the residual if it does not converge. |
+
+## Stage 0 Function Import & Placement
+* `src/stage1_slicer/function_import.py` - user deformation functions f(x, y). **Coordinate reference:** x, y are the coordinates of the part *as placed on the bed* (after the placement step); layers follow `z = z0 - w(z)*f(x, y)` (w = transition blend), so a positive f lowers the layer surface.
+  * A. expression file (`.txt`: one expression, `#` / `//` comment lines ignored, lines joined; `.json`: `{"expression": "..."}`), validated by the AST whitelist at load time.
+  * B. data file (`x, y, f` columns, CSV / whitespace / `;`, optional header): a complete regular grid is used as is, scattered points are resampled to a regular grid with pure-numpy IDW. Result: `GridField` -> `grid_field` strategy. `preview_surface` samples either kind of field for the Stage 0 preview.
+* `src/common/placement.py` - `place_mesh`: rotate about the bounding-box centre (X, Y, Z order), centre in XY, offset, drop to z = 0. Returns a copy.
+* `src/common/primitives.py` - `hollow_box` (rectangular tube with a through-hole along Z; no boolean/triangulation engine needed).
+* `src/common/view_model.py` - Qt-free view logic: layer range (`effective_layers`, `move_range`) and the `Playback` state machine; `feature_styles.group_lines_by_feature` supports `layer_min` and `move_limit`.
 
 ## Stage 2 Toolpath Generation (`src/stage2_toolpath/contour_generator.py`)
 
@@ -78,7 +87,7 @@ Print order inside a layer is `FEATURE_ORDER = (inner_wall, outer_wall, bottom_s
 
 | Interface | Command | Description |
 | --- | --- | --- |
-| **Interactive GUI** | `python3 src/gui_app.py` | Native PyQt6 + pyqtgraph desktop application to generate/upload meshes, configure slicing/kinematics parameters, preview 3D layers/toolpaths and export G-code. Skin layers (top/bottom), travel command, retract and Z-hop are editable; the view checkboxes double as the colour legend (`src/common/feature_styles.py` is the single source of line-type colours: outer wall green, inner wall yellow, bottom skin orange, top skin magenta, sparse infill blue, travel red). |
+| **Interactive GUI** | `python3 src/gui_app.py` | Native PyQt6 + pyqtgraph desktop application to generate/upload meshes, configure slicing/kinematics parameters, preview 3D layers/toolpaths and export G-code. The settings column is a scroll area with collapsible sections. Part placement (rotate / centre / offset / drop to bed), layer range sliders, playback (play/pause, speed, scrub; nozzle marker), Stage 0 function import with a surface preview and a Stage 2/3 status line (layer, feature, X Y Z, B C) are available. Skin layers (top/bottom), travel command, retract and Z-hop are editable; the view checkboxes double as the colour legend (`src/common/feature_styles.py` is the single source of line-type colours: outer wall green, inner wall yellow, bottom skin orange, top skin magenta, sparse infill blue, travel red). |
 | **CLI Runner** | `python3 src/pipeline_cli.py run-all` | Headless execution of all stages sequentially using JSON configs. |
 
 ## Validation & Test Matrix
@@ -97,6 +106,9 @@ Execute with `pytest tests/`
 | `test_stage12_consistency.py` | Stage 1 -> 2 | Resolved metadata, identical Stage 1 / Stage 2 strategy results per layer, tilted-plane z, `external_field` end to end (Stage 1 -> JSON -> Stage 2). |
 | `test_stage2_toolpath.py` | Stage 2 | Top/bottom skin, zigzag linking, holes and islands, immutability, travel counts, `layer_index` through Stage 3. |
 | `test_visual_cases.py` | E2E CLI | Asserts all JSON and HTML files are generated correctly. |
+| `test_phase5_models.py` | Phase 5 logic | Hollow box validity/through-hole/toolpath, placement, layer range, playback state machine, grouping by range. |
+| `test_function_import.py` | Stage 0 import | Expression/data file parsing and rejection of unsafe input, GridField interpolation, `grid_field` equals the equivalent expression end to end, JSON-safe metadata. |
+| `test_gui_smoke.py` | GUI | Offscreen: hollow cube pipeline, placement invalidates results, layer range / playback / status, function import (skipped without PyQt6). |
 
 ## Stage 4 output conventions
 * Relative extrusion (M83), absolute positioning; no heater commands at the start (the end block still turns heaters off).

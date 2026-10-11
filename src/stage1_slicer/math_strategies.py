@@ -368,11 +368,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         super().__init__(params)
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
-        self.expr = params.get("expression", "0.0")
-
-        # Security (AGENTS.md "No Blind Eval"): the expression is validated against an
-        # AST whitelist and compiled once; invalid/unsafe input raises ValueError here.
-        self._code = compile_expression(self.expr)
+        self._setup_field(params)
 
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
@@ -388,6 +384,12 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+
+    def _setup_field(self, params: Dict[str, Any]) -> None:
+        self.expr = params.get("expression", "0.0")
+        # Security (AGENTS.md "No Blind Eval"): the expression is validated against an
+        # AST whitelist and compiled once; invalid/unsafe input raises ValueError here.
+        self._code = compile_expression(self.expr)
 
     def get_resolved_params(self) -> Dict[str, Any]:
         resolved = super().get_resolved_params()
@@ -437,6 +439,23 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         x, y, z = undeformed_pt
         f_val = self._evaluate(x, y)
         return self._compute_custom_field_thickness(undeformed_pt, layer_idx, f_val)
+
+
+class GridFieldStrategy(CustomExpressionStrategy):
+    """
+    f(x, y) given as a regular grid (imported from a data file, see function_import.py) with
+    bilinear interpolation and clamping outside the grid. Parameters: grid_x, grid_y (ascending
+    1D lists) and grid_values (len(grid_y) rows of len(grid_x) values) - all plain lists, so
+    they travel through the Stage 1 metadata to Stage 2.
+    """
+
+    def _setup_field(self, params: Dict[str, Any]) -> None:
+        from src.stage1_slicer.function_import import GridField
+        self.field = GridField.from_params(params)
+        self.expr = "grid_field"
+
+    def _evaluate(self, x, y):
+        return self.field.evaluate(x, y)
 
 
 class ExternalScalarFieldStrategy(BaseSlicingStrategy):
@@ -535,6 +554,8 @@ def build_strategy(name: str, mesh: trimesh.Trimesh, params: Dict[str, Any]) -> 
         return ConicalStrategy(mesh, params)
     if name == "custom_expr":
         return CustomExpressionStrategy(mesh, params)
+    if name == "grid_field":
+        return GridFieldStrategy(mesh, params)
     if name == "external_field":
         return ExternalScalarFieldStrategy(mesh, params)
     raise ValueError(f"Unknown strategy: {name}")
