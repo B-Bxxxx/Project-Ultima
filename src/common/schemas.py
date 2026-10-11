@@ -44,6 +44,7 @@ class MinimalPrintProfile(BaseModel):
     retract_distance: float = Field(0.8, ge=0.0, description="Retraction distance in mm for travel moves (0 disables retraction)")
     z_hop: float = Field(0.4, ge=0.0, description="Z-hop height in mm during travel moves (0 disables the hop)")
     min_retract_travel: float = Field(1.5, ge=0.0, description="Travels shorter than this (mm) are made directly, without retraction and Z-hop")
+    hop_short_travels: bool = Field(False, description="Z-hop also on travels shorter than min_retract_travel (they are still made without retraction).")
     travel_command: Literal["G0", "G1"] = Field("G0", description="G-code command used for non-extruding moves (G0 rapid or G1 linear)")
 
     @property

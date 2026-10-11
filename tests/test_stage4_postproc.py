@@ -101,6 +101,11 @@ def test_short_travel_is_made_directly():
     assert [classify(c) for c in short] == ["travel"]
     assert short[0].params["Z"] == pytest.approx(0.2)      # no hop, so Z is part of the move
 
+    gcode, _ = _gcode(min_retract_travel=1.5, hop_short_travels=True)   # hop, but still no retract
+    short = travel_runs(_body(parse(gcode)))[1]
+    assert [classify(c) for c in short] == ["zmove", "travel", "zmove"]
+    assert short[0].params["Z"] == pytest.approx(0.2 + 0.4)
+
     gcode, _ = _gcode(min_retract_travel=0.1)              # now the same travel is long enough
     assert [classify(c) for c in travel_runs(_body(parse(gcode)))[1]] == ["retract", "zmove", "travel", "zmove", "prime"]
 

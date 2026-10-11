@@ -167,6 +167,9 @@ class MainWindow(QMainWindow):
         self.zhop_spin.setValue(0.4)
         s2_layout.addRow("Z-hop (mm):", self.zhop_spin)
 
+        self.hop_short_chk = QCheckBox("Z-hop on short travels too")
+        s2_layout.addRow("", self.hop_short_chk)
+
         left_layout.addWidget(QLabel("<b>3. Stage 2 Profile</b>"))
         left_layout.addWidget(s2_group)
 
@@ -185,8 +188,10 @@ class MainWindow(QMainWindow):
         # One checkbox per line type; its label doubles as the legend (coloured swatch + description)
         self.feature_checks = {}
         for st in FEATURE_STYLES:
-            chk = QCheckBox(f'<span style="color:{st.hex}; font-size:16px">&#9632;</span> '
-                            f'<b>{st.label}</b> &ndash; {st.description}')
+            # QCheckBox does not render rich text: the line colour is applied to the label itself
+            chk = QCheckBox(f"\u25A0 {st.label} \u2013 {st.description}")
+            chk.setStyleSheet(f"QCheckBox {{ color: {st.hex}; font-weight: bold; }}")
+            chk.setToolTip(st.description)
             chk.setChecked(st.key != "travel")
             chk.stateChanged.connect(self.update_viewport)
             view_layout.addWidget(chk)
@@ -342,6 +347,7 @@ class MainWindow(QMainWindow):
                 travel_command=self.travel_cmd_combo.currentText(),
                 retract_distance=self.retract_spin.value(),
                 z_hop=self.zhop_spin.value(),
+                hop_short_travels=self.hop_short_chk.isChecked(),
             )
             self.profile = prof
             gen = StandardToolpathGenerator()

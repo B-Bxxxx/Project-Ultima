@@ -135,7 +135,9 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
 
         distance = math.dist((prev.x, prev.y, prev.z), (s.x, s.y, s.z))
         if distance < profile.min_retract_travel:
-            return {"retract": False, "hop": False, "lift_z": s.z}      # short: direct move
+            # short: never retract; hop only if requested
+            return {"retract": False, "hop": hop and profile.hop_short_travels,
+                    "lift_z": max(prev.z, s.z) + profile.z_hop}
 
         return {
             "retract": profile.retract_distance > 0.0,
