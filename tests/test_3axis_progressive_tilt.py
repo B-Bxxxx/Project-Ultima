@@ -76,4 +76,5 @@ def test_3axis_progressive_tilt_adaptive_extrusion():
         if line.startswith('G0 ') or (line.startswith('G1 ') and ' X' in line):
             assert " B" not in line
             assert " C" not in line
-            assert " Z" in line
+            if line.startswith('G1') and ' E' in line and 'X' in line:
+                assert " Z" in line      # every extrusion move carries its Z

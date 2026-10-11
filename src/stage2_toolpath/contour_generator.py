@@ -265,17 +265,6 @@ def _fill_polygon(poly: sg.Polygon, spacing: float, angle_deg: float,
             for chain in rot_chains]
 
 
-def _infill_fraction(profile: MinimalPrintProfile) -> float:
-    """
-    Sparse infill density as a fraction 0..1.
-    NOTE: the profile unit is ambiguous (schema default 0.2, config file 15.0); values > 1 are
-    read as percent. This heuristic is isolated here and is replaced by a validated unit in the
-    profile cleanup.
-    """
-    d = profile.infill_density
-    return d if d <= 1.0 else d / 100.0
-
-
 # ----------------------------------------------------------------------------------------------
 # Per-layer plan
 # ----------------------------------------------------------------------------------------------
@@ -350,6 +339,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         Outlines, walls and the infill split (bottom solid / top solid / sparse) of every layer,
         keyed by layer_index. Pure shapely, no 3D projection.
         """
+        if profile.infill_pattern != "lines":
+            logger.warning("infill_pattern '%s' is not implemented; using 'lines'.", profile.infill_pattern)
         offset = profile.nozzle_diameter
         tol = SLIVER_TOLERANCE_FACTOR * offset
         min_area = MIN_REGION_AREA_FACTOR * offset ** 2
@@ -460,7 +451,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     add_contour(chain, f_type)
 
             # 3. sparse infill
-            density = _infill_fraction(profile)
+            density = profile.infill_density
             if density > 0 and not plan.sparse.is_empty:
                 spacing = profile.nozzle_diameter / min(density, 1.0)
                 angle = profile.infill_angle_deg if layer_idx % 2 == 0 else -profile.infill_angle_deg
@@ -497,7 +488,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             x=first_pt[0], y=first_pt[1], z=first_pt[2],
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
                             extrusion_volume=0.0,
-                            feedrate=3000.0,  # default travel feedrate
+                            feedrate=profile.travel_speed,
                             is_travel_move=True,
                             feature_type=contour.feature_type,
                             layer_index=layer_idx
@@ -510,7 +501,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                         x=first_pt[0], y=first_pt[1], z=first_pt[2],
                         i=first_norm[0], j=first_norm[1], k=first_norm[2],
                         extrusion_volume=0.0,
-                        feedrate=3000.0,
+                        feedrate=profile.travel_speed,
                         is_travel_move=True,
                         feature_type=contour.feature_type,
                         layer_index=layer_idx
@@ -527,7 +518,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             x=first_pt[0], y=first_pt[1], z=first_pt[2],
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
                             extrusion_volume=vol,
-                            feedrate=1500.0,
+                            feedrate=profile.print_speed,
                             is_travel_move=False,
                             feature_type=contour.feature_type,
                             layer_index=layer_idx
@@ -555,7 +546,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             x=pt[0], y=pt[1], z=pt[2],
                             i=norm[0], j=norm[1], k=norm[2],
                             extrusion_volume=vol,
-                            feedrate=1500.0,  # default extrusion feedrate
+                            feedrate=profile.print_speed,
                             is_travel_move=False,
                             feature_type=contour.feature_type,
                             layer_index=layer_idx

@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 import pyqtgraph.opengl as gl
 
 from src.common.schemas import MachineConfig, MinimalPrintProfile
+from src.common.feature_styles import FEATURE_STYLES, group_lines_by_feature
 from src.stage1_slicer.registry import PluginRegistry
 from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 from src.stage3_kinematics.registry import KinematicsRegistry
@@ -124,6 +125,9 @@ class MainWindow(QMainWindow):
         s2_group = QWidget()
         s2_layout = QFormLayout(s2_group)
         self.nozzle_spin = QDoubleSpinBox()
+        self.nozzle_spin.setDecimals(2)
+        self.nozzle_spin.setRange(0.1, 2.0)
+        self.nozzle_spin.setSingleStep(0.05)
         self.nozzle_spin.setValue(0.4)
         s2_layout.addRow("Nozzle Dia:", self.nozzle_spin)
 
@@ -132,9 +136,36 @@ class MainWindow(QMainWindow):
         s2_layout.addRow("Perimeters:", self.perims_spin)
 
         self.infill_spin = QDoubleSpinBox()
+        self.infill_spin.setRange(0.0, 1.0)
+        self.infill_spin.setSingleStep(0.05)
         self.infill_spin.setValue(0.2)
-        self.infill_spin.setSingleStep(0.1)
-        s2_layout.addRow("Infill Density:", self.infill_spin)
+        s2_layout.addRow("Infill Density (0-1):", self.infill_spin)
+
+        self.bottom_spin = QSpinBox()
+        self.bottom_spin.setRange(0, 50)
+        self.bottom_spin.setValue(3)
+        s2_layout.addRow("Bottom skin layers:", self.bottom_spin)
+
+        self.top_spin = QSpinBox()
+        self.top_spin.setRange(0, 50)
+        self.top_spin.setValue(3)
+        s2_layout.addRow("Top skin layers:", self.top_spin)
+
+        self.travel_cmd_combo = QComboBox()
+        self.travel_cmd_combo.addItems(["G0", "G1"])
+        s2_layout.addRow("Travel command:", self.travel_cmd_combo)
+
+        self.retract_spin = QDoubleSpinBox()
+        self.retract_spin.setRange(0.0, 20.0)
+        self.retract_spin.setSingleStep(0.1)
+        self.retract_spin.setValue(0.8)
+        s2_layout.addRow("Retract (mm):", self.retract_spin)
+
+        self.zhop_spin = QDoubleSpinBox()
+        self.zhop_spin.setRange(0.0, 10.0)
+        self.zhop_spin.setSingleStep(0.1)
+        self.zhop_spin.setValue(0.4)
+        s2_layout.addRow("Z-hop (mm):", self.zhop_spin)
 
         left_layout.addWidget(QLabel("<b>3. Stage 2 Profile</b>"))
         left_layout.addWidget(s2_group)
@@ -151,25 +182,22 @@ class MainWindow(QMainWindow):
         # View Settings
         view_group = QWidget()
         view_layout = QVBoxLayout(view_group)
-        self.chk_outer = QCheckBox("Outer Walls")
-        self.chk_outer.setChecked(True)
-        self.chk_inner = QCheckBox("Inner Walls")
-        self.chk_inner.setChecked(True)
-        self.chk_infill = QCheckBox("Infill")
-        self.chk_infill.setChecked(True)
-        self.chk_travel = QCheckBox("Travel Moves")
-        self.chk_travel.setChecked(False)
-
-        for chk in (self.chk_outer, self.chk_inner, self.chk_infill, self.chk_travel):
+        # One checkbox per line type; its label doubles as the legend (coloured swatch + description)
+        self.feature_checks = {}
+        for st in FEATURE_STYLES:
+            chk = QCheckBox(f'<span style="color:{st.hex}; font-size:16px">&#9632;</span> '
+                            f'<b>{st.label}</b> &ndash; {st.description}')
+            chk.setChecked(st.key != "travel")
             chk.stateChanged.connect(self.update_viewport)
             view_layout.addWidget(chk)
+            self.feature_checks[st.key] = chk
 
         left_layout.addWidget(QLabel("<b>5. View Settings</b>"))
         left_layout.addWidget(view_group)
 
         # Layer Slider
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setMinimum(0)
+        self.slider.setMinimum(1)
         self.slider.setMaximum(100)
         self.slider.setValue(100)
         self.slider.valueChanged.connect(self.update_viewport)
@@ -308,13 +336,16 @@ class MainWindow(QMainWindow):
                 layer_height=self.layer_height_spin.value(),
                 nozzle_diameter=self.nozzle_spin.value(),
                 num_perimeters=self.perims_spin.value(),
-                infill_density=self.infill_spin.value()
+                infill_density=self.infill_spin.value(),
+                bottom_solid_layers=self.bottom_spin.value(),
+                top_solid_layers=self.top_spin.value(),
+                travel_command=self.travel_cmd_combo.currentText(),
+                retract_distance=self.retract_spin.value(),
+                z_hop=self.zhop_spin.value(),
             )
-            # Deepcopy model before passing to Stage 2 because generate_toolpath mutates contours
-            import copy
-            model_for_s2 = copy.deepcopy(self.stage1_model)
+            self.profile = prof
             gen = StandardToolpathGenerator()
-            self.stage2_traj = gen.generate_toolpath(model_for_s2, prof)
+            self.stage2_traj = gen.generate_toolpath(self.stage1_model, prof)
 
             # Stage 3
             cfg = MachineConfig(
@@ -346,40 +377,10 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
 
-    def _batch_lines_s2(self, waypoints, visible_types, layer_limit, profile):
-        outer, inner, infill, travel = [], [], [], []
-
-        last_wp = None
-        for wp in waypoints:
-            idx = int(wp.z / profile.layer_height)
-            if idx > layer_limit:
-                continue
-
-            if last_wp is not None:
-                # To prevent drawing lines across travels for the same feature type
-                # we don't connect if the current point is the start of a travel
-                p1 = [last_wp.x, last_wp.y, last_wp.z]
-                p2 = [wp.x, wp.y, wp.z]
-
-                if wp.is_travel_move:
-                    if "travel" in visible_types:
-                        travel.extend([p1, p2])
-                else:
-                    if wp.feature_type == "outer_wall" and "outer_wall" in visible_types:
-                        outer.extend([p1, p2])
-                    elif wp.feature_type == "inner_wall" and "inner_wall" in visible_types:
-                        inner.extend([p1, p2])
-                    elif wp.feature_type in ("infill", "bottom_solid", "top_solid") and "infill" in visible_types:
-                        infill.extend([p1, p2])
-
-            last_wp = wp
-
-        return outer, inner, infill, travel
-
     def _batch_lines_s1(self, model, layer_limit):
         lines = []
         for l in model.layers:
-            if l.layer_index > layer_limit:
+            if l.layer_index >= layer_limit:
                 break
             for c in l.contours:
                 if c.feature_type == "boundary":
@@ -413,35 +414,17 @@ class MainWindow(QMainWindow):
                 self.gl_stage1.addItem(gl.GLLinePlotItem(pos=np.array(b_lines, dtype=np.float32), color=(1, 1, 1, 1), mode='lines'))
 
         if self.stage2_traj:
-            vis = []
-            if self.chk_outer.isChecked(): vis.append("outer_wall")
-            if self.chk_inner.isChecked(): vis.append("inner_wall")
-            if self.chk_infill.isChecked(): vis.append("infill")
-            if self.chk_travel.isChecked(): vis.append("travel")
-
-            prof = MinimalPrintProfile(layer_height=self.layer_height_spin.value(), nozzle_diameter=0.4)
-            outer, inner, infill, travel = self._batch_lines_s2(self.stage2_traj.waypoints, vis, limit, prof)
-
-            if outer:
-                self.gl_stage2.addItem(gl.GLLinePlotItem(pos=np.array(outer, dtype=np.float32), color=(0, 0.8, 0, 1), mode='lines'))
-            if inner:
-                self.gl_stage2.addItem(gl.GLLinePlotItem(pos=np.array(inner, dtype=np.float32), color=(0.8, 0.8, 0, 1), mode='lines'))
-            if infill:
-                self.gl_stage2.addItem(gl.GLLinePlotItem(pos=np.array(infill, dtype=np.float32), color=(0, 0.5, 0.8, 1), mode='lines'))
-            if travel:
-                self.gl_stage2.addItem(gl.GLLinePlotItem(pos=np.array(travel, dtype=np.float32), color=(0.8, 0, 0, 0.5), mode='lines'))
-
-            # Stage 3
+            vis = [k for k, chk in self.feature_checks.items() if chk.isChecked()]
+            views = [(self.gl_stage2, self.stage2_traj.waypoints)]
             if self.stage3_traj:
-                k_outer, k_inner, k_infill, k_travel = self._batch_lines_s2(self.stage3_traj.states, vis, limit, prof)
-                if k_outer:
-                    self.gl_kine.addItem(gl.GLLinePlotItem(pos=np.array(k_outer, dtype=np.float32), color=(0, 0.8, 0, 1), mode='lines'))
-                if k_inner:
-                    self.gl_kine.addItem(gl.GLLinePlotItem(pos=np.array(k_inner, dtype=np.float32), color=(0.8, 0.8, 0, 1), mode='lines'))
-                if k_infill:
-                    self.gl_kine.addItem(gl.GLLinePlotItem(pos=np.array(k_infill, dtype=np.float32), color=(0, 0.5, 0.8, 1), mode='lines'))
-                if k_travel:
-                    self.gl_kine.addItem(gl.GLLinePlotItem(pos=np.array(k_travel, dtype=np.float32), color=(0.8, 0, 0, 0.5), mode='lines'))
+                views.append((self.gl_kine, self.stage3_traj.states))
+            for widget, items in views:
+                groups = group_lines_by_feature(items, vis, limit)
+                for st in FEATURE_STYLES:
+                    lines = groups[st.key]
+                    if lines:
+                        widget.addItem(gl.GLLinePlotItem(pos=np.array(lines, dtype=np.float32),
+                                                         color=st.color, mode='lines'))
 
     def export_gcode(self):
         if not self.gcode:

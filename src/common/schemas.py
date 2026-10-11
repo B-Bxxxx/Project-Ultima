@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from typing import List, Optional, Tuple, Literal, Any, Dict
 
 class SlicerPluginParameterSchema(BaseModel):
@@ -14,22 +14,42 @@ class SlicerPluginParameterSchema(BaseModel):
 class MinimalPrintProfile(BaseModel):
     """
     Minimal standard print profile for essential FDM parameters.
+    Speeds are feedrates in mm/min, distances in mm.
     """
-    wall_count: int = Field(2, description="Number of perimeters")
-    num_perimeters: int = Field(2, description="Number of perimeters (alias for wall_count)")
-    bottom_solid_layers: int = Field(3, description="Number of solid bottom layers")
-    top_solid_layers: int = Field(3, description="Number of solid top layers")
-    infill_density: float = Field(0.2, description="Infill percentage (0-100)")
-    infill_pattern: str = Field("grid", description="Infill pattern (e.g., grid, lines, none)")
+    model_config = ConfigDict(populate_by_name=True)
+
+    # --- geometry / shells ---
+    num_perimeters: int = Field(
+        2, ge=0, validation_alias=AliasChoices("num_perimeters", "wall_count"),
+        description="Number of perimeters (walls). Profile files may also call it 'wall_count'.")
+    bottom_solid_layers: int = Field(3, ge=0, description="Number of solid bottom skin layers (0 disables the bottom skin)")
+    top_solid_layers: int = Field(3, ge=0, description="Number of solid top skin layers (0 disables the top skin)")
+    infill_density: float = Field(0.2, ge=0.0, le=1.0, description="Sparse infill density as a FRACTION 0..1 (0.2 = 20 %)")
+    infill_pattern: str = Field("lines", description="Infill pattern. Only 'lines' (parallel zigzag) is implemented; other values fall back to it with a warning.")
     infill_angle_deg: float = Field(45.0, description="Angle of infill in degrees")
-    nozzle_diameter: float = Field(0.4, description="Nozzle diameter in mm")
-    layer_height: float = Field(0.2, description="Layer height in mm")
+    nozzle_diameter: float = Field(0.4, gt=0.0, description="Nozzle diameter in mm (also the line width)")
+    layer_height: float = Field(0.2, gt=0.0, description="Layer height in mm")
     continuous_spiral: bool = Field(False, description="True if continuous single-wall spiral/vase mode")
-    filament_diameter: float = Field(1.75, description="Filament diameter in mm")
-    max_segment_length: float = Field(1.0, description="Maximum length of a segment for surface conformity")
+    filament_diameter: float = Field(1.75, gt=0.0, description="Filament diameter in mm")
+    max_segment_length: float = Field(1.0, gt=0.0, description="Maximum length of a segment for surface conformity")
     include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
-    retract_distance: float = Field(0.8, description="Retraction distance in mm for travel moves")
-    z_hop: float = Field(0.4, description="Z-hop height in mm during travel moves")
+
+    # --- speeds (mm/min) ---
+    print_speed: float = Field(1500.0, gt=0.0, description="Feedrate of extruding moves in mm/min")
+    travel_speed: float = Field(3000.0, gt=0.0, description="Feedrate of travel moves in mm/min")
+    z_speed: float = Field(1200.0, gt=0.0, description="Feedrate of the Z-hop moves in mm/min")
+    retract_speed: float = Field(2400.0, gt=0.0, description="Feedrate of retraction and priming in mm/min")
+
+    # --- travel behaviour ---
+    retract_distance: float = Field(0.8, ge=0.0, description="Retraction distance in mm for travel moves (0 disables retraction)")
+    z_hop: float = Field(0.4, ge=0.0, description="Z-hop height in mm during travel moves (0 disables the hop)")
+    min_retract_travel: float = Field(1.5, ge=0.0, description="Travels shorter than this (mm) are made directly, without retraction and Z-hop")
+    travel_command: Literal["G0", "G1"] = Field("G0", description="G-code command used for non-extruding moves (G0 rapid or G1 linear)")
+
+    @property
+    def wall_count(self) -> int:
+        """Alias of num_perimeters (kept for older profiles and code)."""
+        return self.num_perimeters
 
 class SpatialContour(BaseModel):
     """

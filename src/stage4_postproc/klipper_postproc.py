@@ -1,47 +1,145 @@
 import math
 import os
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
 from jinja2 import Environment, FileSystemLoader
-from typing import List
-from src.common.schemas import MachineTrajectory, MinimalPrintProfile
+
+from src.common.schemas import MachineStateVector, MachineTrajectory, MinimalPrintProfile
 from src.stage4_postproc.base import BasePostProcessor
+
+LAYER_MARKER_RE = re.compile(r"^;LAYER:(\d+)\s*$")
+FOOTER_MARKER = "; End G-Code"
+
+
+@dataclass
+class GcodeLayers:
+    """A G-code file split at its ';LAYER:n' markers (header + layers + footer)."""
+    header: str = ""
+    layers: Dict[int, str] = field(default_factory=dict)
+    footer: str = ""
+
+    def join(self) -> str:
+        """Reassembles the original G-code (split_gcode_by_layer(g).join() == g)."""
+        return self.header + "".join(self.layers[i] for i in sorted(self.layers)) + self.footer
+
+
+def split_gcode_by_layer(gcode: str) -> GcodeLayers:
+    """
+    Splits G-code produced by the post-processor into header, per-layer blocks and footer.
+    A layer block starts at its ';LAYER:n' line and runs to the next marker or to the end block
+    ('; -------------------' + '; End G-Code').
+    """
+    lines = gcode.splitlines(keepends=True)
+    footer_at = len(lines)
+    for i, line in enumerate(lines):
+        if line.strip() == FOOTER_MARKER:
+            footer_at = i - 1 if i > 0 and lines[i - 1].startswith("; ---") else i
+            break
+
+    out = GcodeLayers()
+    current: Optional[int] = None
+    header, footer = [], lines[footer_at:]
+    blocks: Dict[int, List[str]] = {}
+    for line in lines[:footer_at]:
+        m = LAYER_MARKER_RE.match(line)
+        if m:
+            current = int(m.group(1))
+            blocks.setdefault(current, [])
+        if current is None:
+            header.append(line)
+        else:
+            blocks[current].append(line)
+    out.header = "".join(header)
+    out.layers = {i: "".join(b) for i, b in blocks.items()}
+    out.footer = "".join(footer)
+    return out
+
 
 class Klipper5AxisPostProcessor(BasePostProcessor):
     """
     Stage 4 Post-Processor for Klipper 5-axis.
-    Converts extrusion volume to linear E delta, templates G-code.
+    Converts extrusion volume to linear E delta, plans the travel sequences and templates G-code.
+
+    Output conventions
+      * relative extrusion (M83), absolute positioning (G90)
+      * ';LAYER:n' before the first move of every layer (a travel belongs to the layer it travels
+        into), ';LAYER_COUNT:N' in the header
+      * '; TYPE: <feature>' before the first extrusion of every layer and whenever the feature changes
+      * every travel of at least `min_retract_travel` is: retract -> Z-hop up -> travel -> Z-hop
+        down -> prime; shorter travels are made directly. The travel and hop moves use
+        `profile.travel_command` (G0 or G1).
+      * no heater commands are written at the start (temperatures are handled by the printer
+        configuration / start macro)
     """
 
     def generate_gcode(self, trajectory: MachineTrajectory, profile: MinimalPrintProfile) -> str:
-        # Filament cross-sectional area
+        moves = self._plan_moves(trajectory.states, profile)
+        layer_count = len({s.layer_index for s in trajectory.states})
+
+        template_dir = os.path.join(os.path.dirname(__file__), "templates")
+        env = Environment(loader=FileSystemLoader(template_dir), trim_blocks=True, lstrip_blocks=True,
+                          keep_trailing_newline=True)
+        template = env.get_template("klipper_5axis.gcode.j2")
+        return template.render(moves=moves, profile=profile, cmd=profile.travel_command,
+                               layer_count=layer_count)
+
+    def generate_gcode_layers(self, trajectory: MachineTrajectory, profile: MinimalPrintProfile) -> GcodeLayers:
+        """The same G-code, split into header / per-layer blocks / footer."""
+        return split_gcode_by_layer(self.generate_gcode(trajectory, profile))
+
+    # ------------------------------------------------------------------------------------------
+    def _plan_moves(self, states: List[MachineStateVector], profile: MinimalPrintProfile) -> List[Dict[str, Any]]:
+        """Turns machine states into template-ready moves (all decisions are made here, not in Jinja)."""
         r = profile.filament_diameter / 2.0
         area = math.pi * (r ** 2)
 
-        # Prepare context
-        template_states = []
-        for state in trajectory.states:
-            # E step calculation from volume
-            if state.is_travel_move:
-                e_val = 0.0
+        moves: List[Dict[str, Any]] = []
+        prev: Optional[MachineStateVector] = None
+        last_layer: Optional[int] = None
+        last_type: Optional[str] = None
+
+        for s in states:
+            move: Dict[str, Any] = {
+                "x": s.x, "y": s.y, "z": s.z, "b": s.b, "c": s.c,
+                "feedrate": s.feedrate,
+                "layer_marker": s.layer_index if s.layer_index != last_layer else None,
+                "type_marker": None,
+                "kind": "travel" if s.is_travel_move else "extrude",
+            }
+            if move["layer_marker"] is not None:
+                last_layer = s.layer_index
+                last_type = None                      # re-announce the feature in every layer
+
+            if s.is_travel_move:
+                move.update(self._plan_travel(prev, s, profile))
             else:
-                e_val = state.extrusion_volume / area
+                move["e"] = s.extrusion_volume / area
+                if s.feature_type != last_type:
+                    move["type_marker"] = s.feature_type
+                    last_type = s.feature_type
 
-            template_states.append({
-                "x": state.x,
-                "y": state.y,
-                "z": state.z,
-                "b": state.b,
-                "c": state.c,
-                "e": e_val,
-                "feedrate": state.feedrate,
-                "is_travel_move": state.is_travel_move,
-                "feature_type": getattr(state, "feature_type", "outer_wall")
-            })
+            moves.append(move)
+            prev = s
+        return moves
 
-        # Load Jinja2 template
-        template_dir = os.path.join(os.path.dirname(__file__), "templates")
-        env = Environment(loader=FileSystemLoader(template_dir))
-        template = env.get_template("klipper_5axis.gcode.j2")
+    @staticmethod
+    def _plan_travel(prev: Optional[MachineStateVector], s: MachineStateVector,
+                     profile: MinimalPrintProfile) -> Dict[str, Any]:
+        hop = profile.z_hop > 0.0
+        if prev is None:
+            # First move of the print: nothing to retract; lift first so the nozzle never
+            # drags across the bed on the way to the start point.
+            return {"retract": False, "hop": hop, "lift_z": s.z + profile.z_hop}
 
-        # Render G-code
-        gcode = template.render(states=template_states, profile=profile)
-        return gcode
+        distance = math.dist((prev.x, prev.y, prev.z), (s.x, s.y, s.z))
+        if distance < profile.min_retract_travel:
+            return {"retract": False, "hop": False, "lift_z": s.z}      # short: direct move
+
+        return {
+            "retract": profile.retract_distance > 0.0,
+            "hop": hop,
+            # lift above the HIGHER of both ends so layer changes clear the new layer as well
+            "lift_z": max(prev.z, s.z) + profile.z_hop,
+        }

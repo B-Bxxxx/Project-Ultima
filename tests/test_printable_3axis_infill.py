@@ -83,9 +83,11 @@ def test_printable_3axis_infill_and_transition():
     assert "TYPE: infill" in gcode
 
     # Retractions
-    assert "G1 E-1.000 F2400 ; Retract" in gcode
-    assert "; Z-Hop Travel" in gcode
-    assert "; Prime" in gcode
+    from tests.gcode_tools import parse, classify
+    kinds = [classify(c) for c in parse(gcode)]
+    assert "retract" in kinds and "prime" in kinds
+    assert any(c.code in ("G0", "G1") and "Z" in c.params and not c.has_xy and "E" not in c.params
+               for c in parse(gcode)), "expected Z-hop moves"
 
     # Strictly 3-axis
     for line in gcode.split('\n'):
