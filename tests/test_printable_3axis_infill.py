@@ -40,6 +40,9 @@ def test_printable_3axis_infill_and_transition():
     profile = MinimalPrintProfile(
         layer_height=2.0,
         nozzle_diameter=0.4,
+        # 5 layers: with the default 3+3 skin layers every layer would be solid skin
+        top_solid_layers=1,
+        bottom_solid_layers=1,
         include_rotary_axes=False,
         retract_distance=1.0,
         z_hop=0.5
@@ -53,6 +56,8 @@ def test_printable_3axis_infill_and_transition():
         feature_types.add(wp.feature_type)
     assert "outer_wall" in feature_types
     assert "infill" in feature_types
+    assert "bottom_solid" in feature_types
+    assert "top_solid" in feature_types
 
     # Assert layers above transition are curved
     layer_top = sliced_model.layers[-1]

@@ -82,12 +82,12 @@ def test_progressive_tilt_stage2_points_lie_on_the_tilted_plane():
 
     profile = MinimalPrintProfile(layer_height=1.0, nozzle_diameter=0.4, num_perimeters=2,
                                   infill_density=0.2)
-    work = copy.deepcopy(model)
-    StandardToolpathGenerator().generate_toolpath(work, profile)   # replaces contours with features
+    gen = StandardToolpathGenerator()
+    layers = gen.generate_features(model, profile)      # the input model is left untouched
 
     checked = 0
     types = set()
-    for layer in work.layers:
+    for layer in layers:
         t = strat._get_tilt_for_layer(layer.layer_index)
         z0 = strat.start_z + layer.layer_index * strat.layer_height
         n = np.array([0.0, -np.sin(t), np.cos(t)])          # plane normal (independent of project_to_layer)
@@ -99,10 +99,18 @@ def test_progressive_tilt_stage2_points_lie_on_the_tilted_plane():
                 checked += 1
     assert checked > 200
     assert {"outer_wall", "inner_wall"} <= types
-    # and the tilt really is non-trivial: some layer spans several mm in z (not horizontal)
+    # and the tilt really is non-trivial: layer 0 is flat, later layers span several mm in z
     spans = [max(p[2] for c in l.contours for p in c.points) - min(p[2] for c in l.contours for p in c.points)
-             for l in work.layers]
-    assert spans[0] < 1e-6 and max(spans) > 2.0   # layer 0 is flat, later layers tilt
+             for l in layers]
+    assert spans[0] < 1e-6 and max(spans) > 2.0
+
+    # the same holds for every waypoint of the final trajectory (grouped by layer_index)
+    traj = gen.generate_toolpath(model, profile)
+    for w in traj.waypoints:
+        t = strat._get_tilt_for_layer(w.layer_index)
+        z0 = strat.start_z + w.layer_index * strat.layer_height
+        n = np.array([0.0, -np.sin(t), np.cos(t)])
+        assert abs(np.dot(n, np.array([w.x, w.y, w.z]) - np.array([0.0, strat.pivot_y, z0]))) < 1e-6
 
 
 def _external_field_model(tmp_path, transition_height=0.0):
@@ -135,13 +143,14 @@ def test_external_field_end_to_end_stage1_json_stage2(tmp_path):
     assert all(np.isfinite([w.x, w.y, w.z, w.i, w.j, w.k]).all() for w in traj.waypoints)
 
     # Geometry check: the layer surface is z' = c - f(x,y) = c - 0.05 x
-    for layer in work.layers:
-        zp = layer.z_height
-        for c in layer.contours:
-            if c.feature_type != "outer_wall":
-                continue
-            for p in c.points:
-                assert p[2] == pytest.approx(zp - 0.05 * p[0], abs=0.1)
+    nominal = {l.layer_index: l.z_height for l in model.layers}
+    checked = 0
+    for w in traj.waypoints:
+        if w.feature_type != "outer_wall" or w.is_travel_move:
+            continue
+        assert w.z == pytest.approx(nominal[w.layer_index] - 0.05 * w.x, abs=0.1)
+        checked += 1
+    assert checked > 100            # the check must not pass vacuously
 
 
 def test_solve_forward_z_is_exact_inverse_of_undeform():

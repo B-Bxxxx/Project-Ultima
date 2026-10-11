@@ -369,7 +369,7 @@ class MainWindow(QMainWindow):
                         outer.extend([p1, p2])
                     elif wp.feature_type == "inner_wall" and "inner_wall" in visible_types:
                         inner.extend([p1, p2])
-                    elif wp.feature_type == "infill" and "infill" in visible_types:
+                    elif wp.feature_type in ("infill", "bottom_solid", "top_solid") and "infill" in visible_types:
                         infill.extend([p1, p2])
 
             last_wp = wp
