@@ -38,7 +38,7 @@ class SpatialContour(BaseModel):
     points: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (X, Y, Z) coordinates")
     normals: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (I, J, K) surface normals corresponding to the points")
     thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
-    feature_type: str = Field("boundary", description="Type of feature: boundary, outer_wall, inner_wall, or infill")
+    feature_type: str = Field("boundary", description="Type of feature: boundary (Stage 1), outer_wall, inner_wall, bottom_solid, top_solid or infill (Stage 2)")
 
 class UniversalLayer(BaseModel):
     """
@@ -81,6 +81,7 @@ class CLDataWaypoint(BaseModel):
     feedrate: float = Field(..., description="Feedrate in mm/min")
     is_travel_move: bool = Field(False, description="True if this is a travel move (non-extruding)")
     feature_type: str = Field("outer_wall", description="Type of feature")
+    layer_index: int = Field(0, description="Index of the layer this waypoint belongs to (travel moves belong to the layer they travel INTO)")
 
 class CLDataTrajectory(BaseModel):
     """
@@ -130,6 +131,7 @@ class MachineStateVector(BaseModel):
     feedrate: float = Field(..., description="Feedrate in mm/min")
     is_travel_move: bool = Field(False, description="True if this is a travel move")
     feature_type: str = Field("outer_wall", description="Type of feature")
+    layer_index: int = Field(0, description="Index of the layer this state belongs to (copied from the CL-data waypoint)")
 
 
 class MachineTrajectory(BaseModel):

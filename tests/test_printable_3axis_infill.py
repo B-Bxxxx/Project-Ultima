@@ -42,7 +42,9 @@ def test_printable_3axis_infill_and_transition():
         nozzle_diameter=0.4,
         include_rotary_axes=False,
         retract_distance=1.0,
-        z_hop=0.5
+        z_hop=0.5,
+        top_solid_layers=1,      # 5 layers only: keep room for sparse infill between the skins
+        bottom_solid_layers=1
     )
     generator = StandardToolpathGenerator()
     traj = generator.generate_toolpath(sliced_model, profile)
@@ -53,6 +55,8 @@ def test_printable_3axis_infill_and_transition():
         feature_types.add(wp.feature_type)
     assert "outer_wall" in feature_types
     assert "infill" in feature_types
+    assert "bottom_solid" in feature_types
+    assert "top_solid" in feature_types
 
     # Assert layers above transition are curved
     layer_top = sliced_model.layers[-1]

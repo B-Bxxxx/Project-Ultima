@@ -91,7 +91,8 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
                 x=float(P_mach[0]), y=float(P_mach[1]), z=float(P_mach[2]),
                 b=float(b_deg), c=float(c_deg),
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
-                feature_type=wp.feature_type
+                feature_type=wp.feature_type,
+                layer_index=wp.layer_index
             )
             states.append(state)
 
@@ -126,7 +127,8 @@ class Cartesian3AxisSolver(BaseKinematicSolver):
                 x=wp.x, y=wp.y, z=wp.z,
                 b=0.0, c=0.0,
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
-                feature_type=wp.feature_type
+                feature_type=wp.feature_type,
+                layer_index=wp.layer_index
             )
             states.append(state)
 
