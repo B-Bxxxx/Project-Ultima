@@ -1,5 +1,6 @@
 ; Modular 5-Axis CAM Framework
 ; Profile: Klipper 5-Axis
+;LAYER_COUNT:{{ layer_count }}
 M83 ; Relative extrusion mode
 G90 ; Absolute positioning
 
@@ -9,24 +10,34 @@ M83 ; Relative E
 G28 ; Home all axes
 G92 E0 ; Reset Extruder
 ; -------------------
-{% set last_feature = "" %}
-{% for s in states %}
-{% if s.feature_type != last_feature and not s.is_travel_move %}
-; TYPE: {{ s.feature_type }}
-{% set last_feature = s.feature_type %}
+{% for m in moves %}
+{% if m.layer_marker is not none %}
+;LAYER:{{ m.layer_marker }}
 {% endif %}
-{% if s.is_travel_move %}
-G1 E-{{ "%.3f"|format(profile.retract_distance) }} F2400 ; Retract
-G0 X{{ "%.3f"|format(s.x) }} Y{{ "%.3f"|format(s.y) }} Z{{ "%.3f"|format(s.z + profile.z_hop) }}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(s.b) }} C{{ "%.3f"|format(s.c) }}{% endif %} F{{ "%.0f"|format(s.feedrate) }} ; Z-Hop Travel
-G1 Z{{ "%.3f"|format(s.z) }} F{{ "%.0f"|format(s.feedrate) }} ; Un-Hop
-G1 E{{ "%.3f"|format(profile.retract_distance) }} F2400 ; Prime
+{% if m.kind == "travel" %}
+{% if m.retract %}
+G1 E-{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.retract_speed) }} ; Retract
+{% endif %}
+{% if m.hop %}
+{{ cmd }} Z{{ "%.3f"|format(m.lift_z) }} F{{ "%.0f"|format(profile.z_speed) }} ; Z-hop up
+{% endif %}
+{{ cmd }} X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }}{% if not m.hop %} Z{{ "%.3f"|format(m.z) }}{% endif %}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(m.b) }} C{{ "%.3f"|format(m.c) }}{% endif %} F{{ "%.0f"|format(m.feedrate) }} ; Travel
+{% if m.hop %}
+{{ cmd }} Z{{ "%.3f"|format(m.z) }} F{{ "%.0f"|format(profile.z_speed) }} ; Z-hop down
+{% endif %}
+{% if m.retract %}
+G1 E{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.retract_speed) }} ; Prime
+{% endif %}
 {% else %}
-G1 X{{ "%.3f"|format(s.x) }} Y{{ "%.3f"|format(s.y) }} Z{{ "%.3f"|format(s.z) }}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(s.b) }} C{{ "%.3f"|format(s.c) }}{% endif %} E{{ "%.5f"|format(s.e) }} F{{ "%.0f"|format(s.feedrate) }}
+{% if m.type_marker %}
+; TYPE: {{ m.type_marker }}
+{% endif %}
+G1 X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }} Z{{ "%.3f"|format(m.z) }}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(m.b) }} C{{ "%.3f"|format(m.c) }}{% endif %} E{{ "%.5f"|format(m.e) }} F{{ "%.0f"|format(m.feedrate) }}
 {% endif %}
 {% endfor %}
 ; -------------------
 ; End G-Code
-G0 Z150{% if profile.include_rotary_axes %} B0 C0{% endif %} F3000
+{{ cmd }} Z150{% if profile.include_rotary_axes %} B0 C0{% endif %} F{{ "%.0f"|format(profile.travel_speed) }}
 M104 S0 ; Turn off extruder
 M140 S0 ; Turn off bed
 M84 ; Disable motors

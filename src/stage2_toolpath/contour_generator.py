@@ -1,20 +1,295 @@
+"""
+Stage 2: toolpath generation.
+
+UniversalSlicedModel (raw Stage 1 layer outlines)  ->  CLDataTrajectory (walls, solid shells,
+sparse infill, travel moves).
+
+Pipeline per model:
+  1. Outline pass   - turn the closed contours of every layer into shapely polygons
+                      (nesting-depth parity decides what is a hole and what is an island),
+                      generate the wall rings and the infill region
+                      (outline eroded by the wall offsets).
+  2. Shell pass     - compare every layer's infill region with its neighbours
+                      (by layer_index, never by z) to find the top / bottom solid skin;
+                      everything else is sparse infill.
+  3. Fill pass      - scanline fill of every region, per connected polygon, joined into
+                      zigzag chains only where the straight link stays inside the region.
+  4. Trajectory     - project every 2D point back to 3D with the Stage 1 strategy and emit
+                      waypoints (travel moves between non-adjacent contours).
+
+The input model is never modified.
+"""
+import logging
 import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
+
 import numpy as np
-from typing import List
-from src.common.schemas import UniversalSlicedModel, MinimalPrintProfile, CLDataTrajectory, CLDataWaypoint
+import shapely.geometry as sg
+from shapely import affinity
+from shapely.errors import GEOSException
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
+from shapely.prepared import prep
+
+from src.common.schemas import (
+    CLDataTrajectory, CLDataWaypoint, MinimalPrintProfile, SpatialContour,
+    UniversalLayer, UniversalSlicedModel,
+)
 from src.stage2_toolpath.base import BaseToolpathGenerator
 
-import shapely.geometry as sg
+logger = logging.getLogger(__name__)
+
+# Print order of the features of one layer. Walls are printed per outline from the innermost
+# wall to the outer wall, then the solid skin, then the sparse infill.
+FEATURE_ORDER = ("inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
+
+# Scanline angle (deg) of solid skin layers; alternates sign with the layer index.
+SOLID_INFILL_ANGLE_DEG = 45.0
+
+# Geometry tolerances, relative to the nozzle diameter.
+SLIVER_TOLERANCE_FACTOR = 0.02    # slivers thinner than 2x this are numerical noise
+MIN_REGION_AREA_FACTOR = 0.25     # regions smaller than factor * nozzle^2 are not printable
+# A zigzag link may leave the region by at most this fraction of the line spacing.
+LINK_TOLERANCE_FACTOR = 0.1
+
+_EMPTY = sg.Polygon()
+
+
+# ----------------------------------------------------------------------------------------------
+# Shapely helpers
+# ----------------------------------------------------------------------------------------------
+def _polygons_of(geom: Optional[BaseGeometry]) -> List[sg.Polygon]:
+    """Flatten any geometry into its Polygon parts (lines and points are dropped)."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    if hasattr(geom, "geoms"):
+        parts: List[sg.Polygon] = []
+        for g in geom.geoms:
+            parts.extend(_polygons_of(g))
+        return parts
+    return []
+
+
+def _lines_of(geom: Optional[BaseGeometry]) -> List[sg.LineString]:
+    """Flatten any geometry into its LineString parts (points and polygons are dropped)."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "LineString":
+        return [geom]
+    if hasattr(geom, "geoms"):
+        parts: List[sg.LineString] = []
+        for g in geom.geoms:
+            parts.extend(_lines_of(g))
+        return parts
+    return []
+
+
+def _union(parts: Sequence[BaseGeometry]) -> BaseGeometry:
+    parts = [p for p in parts if p is not None and not p.is_empty]
+    return unary_union(parts) if parts else _EMPTY
+
+
+def _clean(geom: BaseGeometry, tol: float, min_area: float) -> BaseGeometry:
+    """Remove numerical slivers (thinner than 2*tol) and unprintably small pieces."""
+    if geom is None or geom.is_empty:
+        return _EMPTY
+    try:
+        opened = geom.buffer(-tol).buffer(tol)
+    except GEOSException as exc:
+        logger.warning("Region cleanup failed (%s); keeping the region unmodified.", exc)
+        opened = geom
+    return _union([p for p in _polygons_of(opened) if p.area >= min_area])
+
+
+def _exposed(region: BaseGeometry, neighbours: Sequence[BaseGeometry],
+             tol: float, min_area: float) -> BaseGeometry:
+    """
+    The part of `region` that is NOT covered by ALL the neighbour regions.
+    A missing neighbour (empty region: beyond the first / last layer, or a gap in the layer
+    numbering) means the whole region is exposed.
+    """
+    if region.is_empty:
+        return _EMPTY
+    covered = None
+    for nb in neighbours:
+        if nb is None or nb.is_empty:
+            return region
+        covered = nb if covered is None else covered.intersection(nb)
+        if covered.is_empty:
+            return region
+    if covered is None:
+        return _EMPTY
+    return _clean(region.difference(covered), tol, min_area)
+
+
+def rings_to_polygons(contours: Sequence[SpatialContour], layer_index: Optional[int] = None) -> List[sg.Polygon]:
+    """
+    Builds the printable outlines of one layer from its closed contours.
+
+    Nesting depth decides the role of a ring: even depth = outer boundary (a part or an island),
+    odd depth = hole of its smallest enclosing ring. An island inside a hole is therefore an
+    outline of its own. Open or self-intersecting contours are skipped with a warning.
+    """
+    tag = f"Layer {layer_index}" if layer_index is not None else "Layer"
+    rings: List[sg.Polygon] = []
+    for c in contours:
+        pts = c.points
+        if len(pts) < 4 or math.dist(pts[0], pts[-1]) > 1e-9:
+            logger.warning("%s: skipping an open contour (%d points).", tag, len(pts))
+            continue
+        try:
+            poly = sg.Polygon([(p[0], p[1]) for p in pts])
+        except (ValueError, TypeError) as exc:
+            logger.warning("%s: skipping a contour that is not a ring (%s).", tag, exc)
+            continue
+        if not poly.is_valid:
+            logger.warning("%s: skipping a self-intersecting contour.", tag)
+            continue
+        if poly.is_empty or poly.area < 1e-12:
+            logger.warning("%s: skipping a degenerate (zero-area) contour.", tag)
+            continue
+        if any(poly.equals(r) for r in rings):
+            continue  # duplicate ring
+        rings.append(poly)
+
+    if not rings:
+        return []
+
+    order = sorted(range(len(rings)), key=lambda i: rings[i].area, reverse=True)
+    parent: Dict[int, Optional[int]] = {}
+    depth: Dict[int, int] = {}
+    for pos, i in enumerate(order):
+        container = None
+        for j in order[:pos]:                      # only larger rings can contain ring i
+            if rings[j].contains(rings[i]):
+                container = j                      # the last match is the smallest container
+        parent[i] = container
+        depth[i] = 0 if container is None else depth[container] + 1
+
+    polygons: List[sg.Polygon] = []
+    for i in order:
+        if depth[i] % 2 == 0:
+            holes = [rings[k].exterior.coords for k in order if parent[k] == i and depth[k] % 2 == 1]
+            polygons.append(sg.Polygon(rings[i].exterior.coords, holes))
+    return polygons
+
+
+# ----------------------------------------------------------------------------------------------
+# Fill
+# ----------------------------------------------------------------------------------------------
+def fill_region(region: BaseGeometry, spacing: float, angle_deg: float,
+                link_tol: Optional[float] = None) -> List[List[Tuple[float, float]]]:
+    """
+    Parallel-line fill of `region` as zigzag chains.
+
+    Every connected polygon of the region is filled on its own. Consecutive scanlines are joined
+    into one chain only if the straight link between them lies inside
+    region.buffer(link_tol) (default 0.1 * spacing); otherwise a new chain starts, i.e. a real
+    travel move. Returns a list of chains (lists of (x, y) points).
+    """
+    if spacing <= 0:
+        raise ValueError("spacing must be positive")
+    if link_tol is None:
+        link_tol = LINK_TOLERANCE_FACTOR * spacing
+    chains: List[List[Tuple[float, float]]] = []
+    for poly in _polygons_of(region):
+        chains.extend(_fill_polygon(poly, spacing, angle_deg, link_tol))
+    return chains
+
+
+def _fill_polygon(poly: sg.Polygon, spacing: float, angle_deg: float,
+                  link_tol: float) -> List[List[Tuple[float, float]]]:
+    # Work in a frame where the scanlines are vertical (x = const).
+    rot = affinity.rotate(poly, angle_deg, origin=(0.0, 0.0))
+    minx, miny, maxx, maxy = rot.bounds
+    zone = prep(rot.buffer(link_tol))
+
+    lines: List[List[Tuple[float, float, float]]] = []     # per scanline: (x, y_low, y_high)
+    for x in np.arange(minx + spacing / 2.0, maxx, spacing):
+        probe = sg.LineString([(x, miny - 1.0), (x, maxy + 1.0)])
+        try:
+            inter = rot.intersection(probe)
+        except GEOSException as exc:
+            logger.warning("Scanline at x=%.4f skipped (%s).", x, exc)
+            lines.append([])
+            continue
+        segs = []
+        for ls in _lines_of(inter):
+            ys = [c[1] for c in ls.coords]
+            lo, hi = min(ys), max(ys)
+            if hi - lo > 1e-6:
+                segs.append((float(x), lo, hi))
+        segs.sort(key=lambda s: s[1])
+        lines.append(segs)
+
+    used = [[False] * len(segs) for segs in lines]
+    rot_chains: List[List[Tuple[float, float]]] = []
+    for li, segs in enumerate(lines):
+        for si, (x, lo, hi) in enumerate(segs):
+            if used[li][si]:
+                continue
+            used[li][si] = True
+            chain = [(x, lo), (x, hi)]
+            lj = li
+            while lj + 1 < len(lines):
+                cur = chain[-1]
+                best = None
+                for sj, (cx, clo, chi) in enumerate(lines[lj + 1]):
+                    if used[lj + 1][sj]:
+                        continue
+                    d_lo = math.hypot(cur[0] - cx, cur[1] - clo)
+                    d_hi = math.hypot(cur[0] - cx, cur[1] - chi)
+                    if d_lo <= d_hi:
+                        start, end, dist = (cx, clo), (cx, chi), d_lo
+                    else:
+                        start, end, dist = (cx, chi), (cx, clo), d_hi
+                    if best is not None and dist >= best[0]:
+                        continue
+                    if not zone.covers(sg.LineString([cur, start])):
+                        continue                      # the link would leave the region
+                    best = (dist, sj, start, end)
+                if best is None:
+                    break
+                _, sj, start, end = best
+                used[lj + 1][sj] = True
+                chain.extend([start, end])
+                lj += 1
+            rot_chains.append(chain)
+
+    a = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(a), math.sin(a)
+    return [[(px * cos_a + py * sin_a, -px * sin_a + py * cos_a) for px, py in chain]
+            for chain in rot_chains]
+
+
+# ----------------------------------------------------------------------------------------------
+# Per-layer plan
+# ----------------------------------------------------------------------------------------------
+@dataclass
+class LayerRegions:
+    """Shapely description of one layer (XY plane)."""
+    layer_index: int
+    polygons: List[sg.Polygon] = field(default_factory=list)   # printable outlines (holes included)
+    # wall rings per outline: [(level, ring coords)], level 0 = outer wall
+    wall_groups: List[List[Tuple[int, List[Tuple[float, float]]]]] = field(default_factory=list)
+    region: BaseGeometry = _EMPTY          # infill region = outlines eroded by all walls
+    bottom_solid: BaseGeometry = _EMPTY
+    top_solid: BaseGeometry = _EMPTY
+    sparse: BaseGeometry = _EMPTY
+
 
 class StandardToolpathGenerator(BaseToolpathGenerator):
     """
     Stage 2 Toolpath Generator.
-    Converts UniversalSlicedModel to CLDataTrajectory by inserting waypoints, calculating travel moves,
-    and calculating extrusion volumes.
+    Converts UniversalSlicedModel to CLDataTrajectory by generating walls, solid skin and sparse
+    infill, inserting travel moves and calculating extrusion volumes.
     """
 
+    # -- helpers ---------------------------------------------------------------------------
     def _subdivide_segment(self, p1, p2, max_len):
-        import math
         dist = math.dist(p1, p2)
         if dist <= max_len:
             return [p2]
@@ -28,280 +303,174 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             pts.append((x, y))
         return pts
 
-    def _generate_2d_features(self, layer, profile: MinimalPrintProfile, strategy=None):
-        import shapely.geometry as sg
-        if not layer.contours:
-            return layer.contours
+    @staticmethod
+    def _build_strategy(model: UniversalSlicedModel):
+        """Rebuilds the Stage 1 strategy from the RESOLVED parameters stored in the metadata."""
+        if "strategy" not in model.metadata:
+            return None
+        import trimesh
+        from src.stage1_slicer.math_strategies import build_strategy
+        strat_name = model.metadata["strategy"]
+        # The strategies only need their math here, so an empty mesh is enough.
+        strategy = build_strategy(strat_name, trimesh.Trimesh(), model.metadata)
 
-        rings = []
-        for contour in layer.contours:
-            if len(contour.points) > 2 and contour.points[0] == contour.points[-1]:
-                pts_2d = [(p[0], p[1]) for p in contour.points]
-                try:
-                    ring = sg.LinearRing(pts_2d)
-                    if ring.is_valid:
-                        poly = sg.Polygon(ring)
-                        if poly.is_valid:
-                            rings.append((poly.area, ring, poly))
-                except:
-                    pass
-
-        if not rings:
-            return layer.contours
-
-        rings.sort(key=lambda r: r[0], reverse=True)
-
-        valid_exteriors = []
-
-        for area, ring, poly in rings:
-            is_hole = False
-            for i, ext_poly in enumerate(valid_exteriors):
-                if ext_poly.contains(poly):
-                    try:
-                        valid_exteriors[i] = ext_poly.difference(poly)
-                        is_hole = True
-                        break
-                    except:
-                        pass
-            if not is_hole:
-                valid_exteriors.append(poly)
-
-        valid_polygons = valid_exteriors
-
-        new_contours = []
-        offset_dist = profile.nozzle_diameter
-
-        from src.common.schemas import SpatialContour
-        import math
-
-        def add_contour(poly_coords, f_type):
-            if len(poly_coords) < 2:
-                return
-
-            subdivided_coords = [poly_coords[0]]
-            for i in range(1, len(poly_coords)):
-                subdivided_coords.extend(self._subdivide_segment(subdivided_coords[-1], poly_coords[i], profile.max_segment_length))
-
-            pts = []
-            normals = []
-            thicknesses = []
-
-            for x, y in subdivided_coords:
-                if strategy:
-                    z_prime = layer.z_prime if hasattr(layer, "z_prime") and layer.z_prime is not None else layer.z_height
-                    layer_idx = int(round((z_prime - strategy.start_z) / strategy.layer_height))
-                    pt_3d = strategy.undeform_point((x, y, z_prime), layer_idx)
-                    norm = strategy.compute_normal(pt_3d, layer_idx)
-                    thick = strategy.compute_thickness(pt_3d, layer_idx)
-                else:
-                    pt_3d = (x, y, layer.z_height)
-                    norm = (0.0, 0.0, 1.0)
-                    thick = profile.layer_height
-                pts.append(pt_3d)
-                normals.append(norm)
-                thicknesses.append(thick)
-
-            new_contours.append(SpatialContour(
-                points=pts,
-                normals=normals,
-                thicknesses=thicknesses,
-                feature_type=f_type
-            ))
-
-        for poly in valid_polygons:
-            if poly.geom_type == 'Polygon':
-                polys = [poly]
-            elif poly.geom_type == 'MultiPolygon':
-                polys = list(poly.geoms)
-            else:
-                polys = []
-
-            for p in polys:
-                current_poly = p
-                for i in range(profile.num_perimeters):
-                    if current_poly.is_empty:
-                        break
-
-                    if current_poly.geom_type == 'Polygon':
-                        c_polys = [current_poly]
-                    elif current_poly.geom_type == 'MultiPolygon':
-                        c_polys = list(current_poly.geoms)
-                    else:
-                        c_polys = []
-
-                    for cp in c_polys:
-                        f_type = "outer_wall" if i == 0 else "inner_wall"
-                        if cp.exterior:
-                            add_contour(list(cp.exterior.coords), f_type)
-                        for interior in cp.interiors:
-                            add_contour(list(interior.coords), f_type)
-
-                    try:
-                        current_poly = current_poly.buffer(-offset_dist)
-                    except:
-                        break
-
-                if current_poly.is_empty or profile.infill_density <= 0:
+        if strat_name == "external_field":
+            # Rebuild the IDW field from ALL layer boundaries
+            pts_2d = []
+            vertex_deformations = []
+            for lyr in model.layers:
+                z_prime = lyr.z_prime if lyr.z_prime is not None else lyr.z_height
+                w = strategy.get_blend_weight(z_prime)
+                if w <= 1e-6:
                     continue
+                for contour in lyr.contours:
+                    for pt in contour.points:
+                        pts_2d.append([pt[0], pt[1]])
+                        vertex_deformations.append((z_prime - pt[2]) / w)
+            if pts_2d:
+                strategy.pts_2d = np.array(pts_2d)
+                strategy.vertex_deformations = np.array(vertex_deformations)
+        return strategy
 
-                bounds = current_poly.bounds
-                if bounds:
-                    minx, miny, maxx, maxy = bounds
-                    density_frac = profile.infill_density if profile.infill_density <= 1.0 else profile.infill_density / 100.0
-                    spacing = offset_dist / density_frac if density_frac > 0 else offset_dist * 4
+    # -- outline + shell passes --------------------------------------------------------------
+    def compute_layer_regions(self, model: UniversalSlicedModel,
+                              profile: MinimalPrintProfile) -> Dict[int, LayerRegions]:
+        """
+        Outlines, walls and the infill split (bottom solid / top solid / sparse) of every layer,
+        keyed by layer_index. Pure shapely, no 3D projection.
+        """
+        if profile.infill_pattern != "lines":
+            logger.warning("infill_pattern '%s' is not implemented; using 'lines'.", profile.infill_pattern)
+        offset = profile.nozzle_diameter
+        tol = SLIVER_TOLERANCE_FACTOR * offset
+        min_area = MIN_REGION_AREA_FACTOR * offset ** 2
 
-                    angle = profile.infill_angle_deg if layer.layer_index % 2 == 0 else -profile.infill_angle_deg
-                    import math as m
-                    rad = m.radians(angle)
-                    cos_a, sin_a = m.cos(rad), m.sin(rad)
+        plans: Dict[int, LayerRegions] = {}
+        for layer in model.layers:
+            plan = LayerRegions(layer_index=layer.layer_index)
+            plan.polygons = rings_to_polygons(layer.contours, layer.layer_index)
+            if not plan.polygons:
+                logger.warning("Layer %d: no closed, valid contour; the layer is skipped.", layer.layer_index)
+                plans[layer.layer_index] = plan
+                continue
 
-                    # We compute the bounding box of the rotated polygon
-                    # Handle MultiPolygons safely
-                    if current_poly.geom_type == 'MultiPolygon':
-                        pts = []
-                        for geom in current_poly.geoms:
-                            pts.extend(list(geom.exterior.coords))
+            region_parts = []
+            for outline in plan.polygons:
+                group: List[Tuple[int, List[Tuple[float, float]]]] = []
+                current: BaseGeometry = outline
+                for level in range(profile.num_perimeters):
+                    if current.is_empty:
+                        break
+                    for cp in _polygons_of(current):
+                        group.append((level, list(cp.exterior.coords)))
+                        for interior in cp.interiors:
+                            group.append((level, list(interior.coords)))
+                    try:
+                        current = current.buffer(-offset)
+                    except GEOSException as exc:
+                        logger.warning("Layer %d: wall offset failed (%s); no further walls.", layer.layer_index, exc)
+                        current = _EMPTY
+                        break
+                plan.wall_groups.append(group)
+                region_parts.append(current)
+            plan.region = _union([p for p in _polygons_of(_union(region_parts)) if p.area >= min_area])
+            plans[layer.layer_index] = plan
+
+        top_n = max(0, int(profile.top_solid_layers))
+        bottom_n = max(0, int(profile.bottom_solid_layers))
+        regions = {i: p.region for i, p in plans.items()}
+        for idx, plan in plans.items():
+            region = plan.region
+            if region.is_empty:
+                continue
+            below = [regions.get(idx - k, _EMPTY) for k in range(1, bottom_n + 1)]
+            above = [regions.get(idx + k, _EMPTY) for k in range(1, top_n + 1)]
+            bottom = _exposed(region, below, tol, min_area) if bottom_n > 0 else _EMPTY
+            top = _exposed(region, above, tol, min_area) if top_n > 0 else _EMPTY
+            if not top.is_empty and not bottom.is_empty:
+                top = _clean(top.difference(bottom), tol, min_area)
+            solid = _union([bottom, top])
+            plan.bottom_solid = bottom
+            plan.top_solid = top
+            plan.sparse = region if solid.is_empty else _clean(region.difference(solid), tol, min_area)
+        return plans
+
+    # -- feature generation (2D -> 3D contours) ---------------------------------------------
+    def generate_features(self, model: UniversalSlicedModel,
+                          profile: MinimalPrintProfile) -> List[UniversalLayer]:
+        """
+        Returns NEW layers whose contours are the printable features (outer_wall, inner_wall,
+        bottom_solid, top_solid, infill) in print order. The input model is not modified.
+        """
+        strategy = self._build_strategy(model)
+        plans = self.compute_layer_regions(model, profile)
+        out_layers: List[UniversalLayer] = []
+
+        for layer in sorted(model.layers, key=lambda l: l.layer_index):
+            plan = plans[layer.layer_index]
+            layer_idx = layer.layer_index
+
+            contours: List[SpatialContour] = []
+
+            def add_contour(coords, f_type, _layer=layer, _idx=layer_idx):
+                if len(coords) < 2:
+                    return
+                subdivided = [coords[0]]
+                for i in range(1, len(coords)):
+                    subdivided.extend(self._subdivide_segment(subdivided[-1], coords[i], profile.max_segment_length))
+
+                pts, normals, thicknesses = [], [], []
+                for x, y in subdivided:
+                    if strategy:
+                        pt_3d = strategy.project_to_layer(x, y, _idx)
+                        norm = strategy.compute_normal(pt_3d, _idx)
+                        thick = strategy.compute_thickness(pt_3d, _idx)
                     else:
-                        pts = list(current_poly.exterior.coords)
+                        pt_3d = (x, y, _layer.z_height)
+                        norm = (0.0, 0.0, 1.0)
+                        thick = profile.layer_height
+                    pts.append(pt_3d)
+                    normals.append(norm)
+                    thicknesses.append(thick)
+                contours.append(SpatialContour(points=pts, normals=normals,
+                                               thicknesses=thicknesses, feature_type=f_type))
 
-                    rot_coords = [(px*cos_a - py*sin_a, px*sin_a + py*cos_a) for px, py in pts]
-                    minx_r = min(r[0] for r in rot_coords)
-                    maxx_r = max(r[0] for r in rot_coords)
-                    miny_r = min(r[1] for r in rot_coords)
-                    maxy_r = max(r[1] for r in rot_coords)
+            # 1. walls: per outline from the innermost wall to the outer wall
+            for group in plan.wall_groups:
+                for level in sorted({lv for lv, _ in group}, reverse=True):
+                    f_type = "outer_wall" if level == 0 else "inner_wall"
+                    for lv, ring in group:
+                        if lv == level:
+                            add_contour(ring, f_type)
 
-                    x_r = minx_r + spacing / 2.0
-                    infill_segments = []
-                    while x_r < maxx_r:
-                        p1_x = x_r*cos_a + miny_r*sin_a
-                        p1_y = -x_r*sin_a + miny_r*cos_a
-                        p2_x = x_r*cos_a + maxy_r*sin_a
-                        p2_y = -x_r*sin_a + maxy_r*cos_a
+            # 2. solid skin (100 % density, +-45 deg alternating per layer)
+            solid_angle = SOLID_INFILL_ANGLE_DEG if layer_idx % 2 == 0 else -SOLID_INFILL_ANGLE_DEG
+            solid_spacing = profile.nozzle_diameter
+            for f_type, geom in (("bottom_solid", plan.bottom_solid), ("top_solid", plan.top_solid)):
+                for chain in fill_region(geom, solid_spacing, solid_angle):
+                    add_contour(chain, f_type)
 
-                        line = sg.LineString([(p1_x, p1_y), (p2_x, p2_y)])
-                        try:
-                            inter = current_poly.intersection(line)
-                            if inter.geom_type == 'LineString':
-                                infill_segments.append(list(inter.coords))
-                            elif inter.geom_type == 'MultiLineString':
-                                for l in inter.geoms:
-                                    infill_segments.append(list(l.coords))
-                        except:
-                            pass
-                        x_r += spacing
+            # 3. sparse infill
+            density = profile.infill_density
+            if density > 0 and not plan.sparse.is_empty:
+                spacing = profile.nozzle_diameter / min(density, 1.0)
+                angle = profile.infill_angle_deg if layer_idx % 2 == 0 else -profile.infill_angle_deg
+                for chain in fill_region(plan.sparse, spacing, angle):
+                    add_contour(chain, "infill")
 
-                    # Now sort segments to form a zigzag path
-                    # We alternate endpoints
-                    if infill_segments:
-                        # Sort by their rotated x-coordinate (which is the orthogonal distance)
-                        def get_orthogonal_distance(seg):
-                            # The line equation is roughly x_r = px * cos_a + py * sin_a
-                            # We can just pick the first point
-                            px, py = seg[0]
-                            return px * cos_a + py * sin_a
+            out_layers.append(UniversalLayer(layer_index=layer_idx, z_height=layer.z_height,
+                                             z_prime=layer.z_prime, contours=contours))
+        return out_layers
 
-                        infill_segments.sort(key=get_orthogonal_distance)
-
-                        current_contour = []
-
-                        # Use a greedy approach to traverse segments
-                        unvisited = list(infill_segments)
-
-                        while unvisited:
-                            if not current_contour:
-                                # Start a new contour with the first available segment
-                                current_contour = unvisited.pop(0)
-                            else:
-                                last_pt = current_contour[-1]
-
-                                # Find the closest segment endpoint among unvisited segments
-                                best_dist = float('inf')
-                                best_idx = -1
-                                best_seg_oriented = None
-
-                                # Only look at nearby segments to maintain rectilinear pattern
-                                # We assume they are roughly sorted by orthogonal distance
-                                search_limit = min(10, len(unvisited))
-                                for i in range(search_limit):
-                                    seg = unvisited[i]
-                                    d1 = m.hypot(last_pt[0] - seg[0][0], last_pt[1] - seg[0][1])
-                                    d2 = m.hypot(last_pt[0] - seg[-1][0], last_pt[1] - seg[-1][1])
-
-                                    if d1 < best_dist:
-                                        best_dist = d1
-                                        best_idx = i
-                                        best_seg_oriented = seg
-                                    if d2 < best_dist:
-                                        best_dist = d2
-                                        best_idx = i
-                                        best_seg_oriented = seg[::-1]
-
-                                if best_dist <= spacing * 2.1:
-                                    # Join them!
-                                    current_contour.extend(best_seg_oriented)
-                                    unvisited.pop(best_idx)
-                                else:
-                                    # Too far, finish this contour
-                                    add_contour(current_contour, "infill")
-                                    current_contour = []
-
-                        if current_contour:
-                            add_contour(current_contour, "infill")
-
-        if not new_contours:
-            return layer.contours
-        return new_contours
-
+    # -- trajectory ------------------------------------------------------------------------
     def generate_toolpath(self, model: UniversalSlicedModel, profile: MinimalPrintProfile) -> CLDataTrajectory:
-        waypoints = []
+        waypoints: List[CLDataWaypoint] = []
 
         # We will keep track of the last point to calculate distance (dL)
         last_pt = None
 
-        # Load strategy to re-project generated 2D shapes
-        strategy = None
-        if "strategy" in model.metadata:
-            strat_name = model.metadata["strategy"]
-            # To reconstruct strategy we need a mesh, but we don't have it here.
-            # But the math strategies don't actually need the mesh *if* we only call undeform/compute.
-            # We can recreate it with an empty mesh just for math.
-            import trimesh
-            from src.stage1_slicer.math_strategies import (
-                PlanarStrategy, ProgressiveTiltStrategy, ConicalStrategy,
-                CustomExpressionStrategy, ExternalScalarFieldStrategy
-            )
-            dummy_mesh = trimesh.Trimesh()
-            if strat_name == "progressive_tilt":
-                strategy = ProgressiveTiltStrategy(dummy_mesh, model.metadata)
-            elif strat_name == "custom_expr":
-                strategy = CustomExpressionStrategy(dummy_mesh, model.metadata)
-            elif strat_name == "conical" or strat_name == "conical_or_curved":
-                strategy = ConicalStrategy(dummy_mesh, model.metadata)
-            elif strat_name == "external_field":
-                strategy = ExternalScalarFieldStrategy(dummy_mesh, model.metadata)
-
-                # Rebuild IDW from ALL layer boundaries
-                import numpy as np
-                pts_2d = []
-                vertex_deformations = []
-                for lyr in model.layers:
-                    for contour in lyr.contours:
-                        for idx, pt in enumerate(contour.points):
-                            z_prime = lyr.z_prime if hasattr(lyr, "z_prime") and lyr.z_prime is not None else lyr.z_height
-                            w = strategy.get_blend_weight(z_prime) if hasattr(strategy, 'get_blend_weight') else 1.0
-                            if w > 1e-6:
-                                f_val = (z_prime - pt[2]) / w
-                                pts_2d.append([pt[0], pt[1]])
-                                vertex_deformations.append(f_val)
-
-                if pts_2d:
-                    strategy.pts_2d = np.array(pts_2d)
-                    strategy.vertex_deformations = np.array(vertex_deformations)
-            else:
-                strategy = PlanarStrategy(dummy_mesh, model.metadata)
-
-        for layer in model.layers:
-            layer.contours = self._generate_2d_features(layer, profile, strategy)
+        for layer in self.generate_features(model, profile):
+            layer_idx = layer.layer_index
             for contour in layer.contours:
                 if not contour.points:
                     continue
@@ -319,9 +488,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             x=first_pt[0], y=first_pt[1], z=first_pt[2],
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
                             extrusion_volume=0.0,
-                            feedrate=3000.0, # default travel feedrate
+                            feedrate=profile.travel_speed,
                             is_travel_move=True,
-                            feature_type=contour.feature_type
+                            feature_type=contour.feature_type,
+                            layer_index=layer_idx
                         ))
 
                 # For continuous spiral or normal extrusion, add the first point of the contour
@@ -331,9 +501,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                         x=first_pt[0], y=first_pt[1], z=first_pt[2],
                         i=first_norm[0], j=first_norm[1], k=first_norm[2],
                         extrusion_volume=0.0,
-                        feedrate=3000.0,
+                        feedrate=profile.travel_speed,
                         is_travel_move=True,
-                        feature_type=contour.feature_type
+                        feature_type=contour.feature_type,
+                        layer_index=layer_idx
                     ))
                 elif profile.continuous_spiral and last_pt is not None:
                     # In continuous spiral mode, extrude directly to the first point of the new contour
@@ -347,9 +518,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             x=first_pt[0], y=first_pt[1], z=first_pt[2],
                             i=first_norm[0], j=first_norm[1], k=first_norm[2],
                             extrusion_volume=vol,
-                            feedrate=1500.0,
+                            feedrate=profile.print_speed,
                             is_travel_move=False,
-                            feature_type=contour.feature_type
+                            feature_type=contour.feature_type,
+                            layer_index=layer_idx
                         ))
 
                 last_pt = first_pt
@@ -374,9 +546,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                             x=pt[0], y=pt[1], z=pt[2],
                             i=norm[0], j=norm[1], k=norm[2],
                             extrusion_volume=vol,
-                            feedrate=1500.0, # default extrusion feedrate
+                            feedrate=profile.print_speed,
                             is_travel_move=False,
-                            feature_type=contour.feature_type
+                            feature_type=contour.feature_type,
+                            layer_index=layer_idx
                         ))
                         last_pt = pt
 

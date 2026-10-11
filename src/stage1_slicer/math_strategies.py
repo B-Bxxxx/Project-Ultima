@@ -2,6 +2,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Tuple
 import trimesh
+from src.stage1_slicer.safe_expr import compile_expression, evaluate_compiled
 
 class BaseSlicingStrategy(ABC):
     def __init__(self, params: Dict[str, Any] = None):
@@ -56,32 +57,61 @@ class BaseSlicingStrategy(ABC):
             raise ValueError(f"Mesh refinement produced too many vertices: {len(vertices)}")
         self.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
         self.deformed = self.mesh.copy()
-    def _solve_forward_z(self, z, f_val):
-        import numpy as np
-        z_prime = z.copy() if hasattr(z, 'copy') else z
-        if isinstance(z, np.ndarray):
-            for _ in range(100):
-                w = np.zeros_like(z_prime)
-                if self.transition_height <= 0.0:
-                    w[:] = 1.0
-                else:
-                    sz = getattr(self, "start_z", 0.0)
-                    w = (z_prime - sz) / self.transition_height
-                    w = np.clip(w, 0.0, 1.0)
+    def _solve_forward_z(self, z, f_val, tol: float = 1e-6, max_iter: int = 100):
+        """
+        Solves z' = z + w(z') * f for z' (fixed-point iteration), where w is the
+        blend weight of the transition zone. This is the exact inverse of
+        undeform_point (z = z' - w(z') * f).
 
-                new_z_prime = z + w * f_val
-                if np.max(np.abs(new_z_prime - z_prime)) < 1e-6:
-                    return new_z_prime
-                z_prime = new_z_prime
-            return z_prime
-        else:
-            for _ in range(100):
-                w = self.get_blend_weight(z_prime)
-                new_z_prime = z + w * f_val
-                if abs(new_z_prime - z_prime) < 1e-6:
-                    return new_z_prime
-                z_prime = new_z_prime
-            return z_prime
+        The iteration converges when |f| / transition_height < 1. If it does not
+        converge within `max_iter` iterations a ValueError with the residual is
+        raised, because silently continuing would produce wrong geometry.
+        """
+        z_arr = np.asarray(z, dtype=float)
+        f_arr = np.asarray(f_val, dtype=float)
+        z_prime = z_arr.copy()
+        residual = 0.0
+        for _ in range(max_iter):
+            if self.transition_height <= 0.0:
+                w = np.ones_like(z_prime)
+            else:
+                sz = getattr(self, "start_z", 0.0)
+                w = np.clip((z_prime - sz) / self.transition_height, 0.0, 1.0)
+            new_z_prime = z_arr + w * f_arr
+            residual = float(np.max(np.abs(new_z_prime - z_prime))) if new_z_prime.size else 0.0
+            z_prime = new_z_prime
+            if residual < tol:
+                return z_prime if isinstance(z, np.ndarray) else float(z_prime)
+        raise ValueError(
+            f"Forward deformation z' = z + w(z')*f did not converge after {max_iter} "
+            f"iterations (residual {residual:.3g}). The deformation is too steep for "
+            f"transition_height={self.transition_height}: increase transition_height "
+            f"or reduce the deformation (need max|f| < transition_height)."
+        )
+
+    def get_resolved_params(self) -> Dict[str, Any]:
+        """
+        Returns a copy of the parameters AFTER defaults were resolved (e.g. the
+        mesh-derived start_z / end_z). Stage 1 stores this in the model metadata so
+        Stage 2 rebuilds the strategy with exactly the same values.
+        """
+        return {
+            "layer_height": float(getattr(self, "layer_height", 0.2)),
+            "transition_height": float(self.transition_height),
+            "start_z": float(getattr(self, "start_z", 0.0)),
+            "end_z": float(getattr(self, "end_z", 0.0)),
+        }
+
+    def project_to_layer(self, x: float, y: float, layer_idx: int) -> Tuple[float, float, float]:
+        """
+        Lifts a 2D point (x, y) of layer `layer_idx` to its true 3D position.
+        Used by Stage 2 after it re-generated 2D features (walls, infill).
+        Default: the layer lives on the deformed-space plane z' = start_z + idx*h,
+        so the point is mapped back with undeform_point.
+        """
+        z_prime = getattr(self, "start_z", 0.0) + layer_idx * getattr(self, "layer_height", 0.2)
+        return self.undeform_point((x, y, z_prime), layer_idx)
+
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
         """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
         return getattr(self, "layer_height", 0.2)
@@ -108,6 +138,7 @@ class PlanarStrategy(BaseSlicingStrategy):
         else:
             self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
+        self.end_z = end_z
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
     def get_layer_count(self) -> int:
@@ -138,6 +169,7 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         else:
             self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
+        self.end_z = end_z
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
@@ -151,6 +183,26 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
 
     def get_layer_count(self) -> int:
         return self.num_layers
+
+    def get_resolved_params(self) -> Dict[str, Any]:
+        resolved = super().get_resolved_params()
+        resolved.update({
+            "start_tilt_deg": float(np.degrees(self.start_tilt)),
+            "end_tilt_deg": float(np.degrees(self.end_tilt)),
+            "pivot_y": float(self.pivot_y),
+        })
+        return resolved
+
+    def project_to_layer(self, x: float, y: float, layer_idx: int) -> Tuple[float, float, float]:
+        """
+        The layer lies on the tilted plane through [0, pivot_y, z0] with normal
+        [0, -sin(t), cos(t)]  =>  z = z0 + (y - pivot_y) * tan(t).
+        (undeform_point stays a pass-through: Stage 1 feeds it points that are
+        already real 3D points of the tilted plane.)
+        """
+        tilt = self._get_tilt_for_layer(layer_idx)
+        z0 = self.start_z + layer_idx * self.layer_height
+        return (float(x), float(y), float(z0 + (y - self.pivot_y) * np.tan(tilt)))
 
     def _get_tilt_for_layer(self, layer_idx: int) -> float:
         t = layer_idx / max(1, (self.num_layers - 1))
@@ -239,7 +291,13 @@ class ConicalStrategy(BaseSlicingStrategy):
         else:
             self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
+        self.end_z = end_z
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+
+    def get_resolved_params(self) -> Dict[str, Any]:
+        resolved = super().get_resolved_params()
+        resolved["cone_angle_deg"] = float(np.degrees(self.cone_angle))
+        return resolved
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -312,8 +370,9 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         self.layer_height = params.get("layer_height", 0.2)
         self.expr = params.get("expression", "0.0")
 
-        # Security: evaluate expression in strictly restricted namespace
-        self.safe_dict = {"np": np, "math": __import__("math"), "__builtins__": {}}
+        # Security (AGENTS.md "No Blind Eval"): the expression is validated against an
+        # AST whitelist and compiled once; invalid/unsafe input raises ValueError here.
+        self._code = compile_expression(self.expr)
 
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
@@ -327,13 +386,18 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         else:
             self.start_z = params.get("start_z", 0.0)
             end_z = params.get("end_z", 10.0)
+        self.end_z = end_z
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+
+    def get_resolved_params(self) -> Dict[str, Any]:
+        resolved = super().get_resolved_params()
+        resolved["expression"] = self.expr
+        return resolved
 
     def _evaluate(self, x, y):
         r = np.sqrt(x**2 + y**2)
-        # Allows vectorized evaluation via np
-        local_dict = {"x": x, "y": y, "r": r}
-        return eval(self.expr, self.safe_dict, local_dict)
+        # Vectorized evaluation of the validated, pre-compiled expression
+        return evaluate_compiled(self._code, x, y, r)
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -379,15 +443,24 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
         super().__init__(params)
         self.mesh = mesh.copy()
-        self.vertex_deformations = np.array(params.get("vertex_deformations", np.zeros(len(self.mesh.vertices))))
+        n_vert = len(self.mesh.vertices)
+        # Accepts a numpy array or a plain list. In Stage 2 the mesh is empty and the
+        # field is rebuilt afterwards from the layer contours (see Stage 2).
+        self.vertex_deformations = np.asarray(
+            params.get("vertex_deformations", np.zeros(n_vert)), dtype=float)
         self.layer_height = params.get("layer_height", 0.2)
 
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
-        self.deformed.vertices[:, 2] += self.vertex_deformations
-
-        self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
-        end_z = params.get("end_z", self.deformed.bounds[1, 2])
+        if n_vert > 0:
+            self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+            self.deformed.vertices[:, 2] = self._solve_forward_z(
+                self.deformed.vertices[:, 2], self.vertex_deformations)
+            end_z = params.get("end_z", self.deformed.bounds[1, 2])
+        else:
+            self.start_z = params.get("start_z", 0.0)
+            end_z = params.get("end_z", 10.0)
+        self.end_z = end_z
         self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
 
         # Setup for pure Numpy IDW (Inverse Distance Weighting) interpolation
@@ -450,3 +523,18 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         x, y, z = undeformed_pt
         f_val = self._interpolate_idw(x, y)
         return self._compute_custom_field_thickness(undeformed_pt, layer_idx, f_val)
+
+
+def build_strategy(name: str, mesh: trimesh.Trimesh, params: Dict[str, Any]) -> BaseSlicingStrategy:
+    """Single factory used by Stage 1 (real mesh) and Stage 2 (empty mesh)."""
+    if name == "planar":
+        return PlanarStrategy(mesh, params)
+    if name == "progressive_tilt":
+        return ProgressiveTiltStrategy(mesh, params)
+    if name in ("conical", "conical_or_curved"):
+        return ConicalStrategy(mesh, params)
+    if name == "custom_expr":
+        return CustomExpressionStrategy(mesh, params)
+    if name == "external_field":
+        return ExternalScalarFieldStrategy(mesh, params)
+    raise ValueError(f"Unknown strategy: {name}")
