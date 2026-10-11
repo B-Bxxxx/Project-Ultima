@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
-from src.common.schemas import UniversalLayer, MinimalPrintProfile, CLDataTrajectory
+from src.common.schemas import UniversalSlicedModel, MinimalPrintProfile, CLDataTrajectory
 
 class BaseToolpathGenerator(ABC):
     """
@@ -8,8 +7,9 @@ class BaseToolpathGenerator(ABC):
     """
 
     @abstractmethod
-    def generate_toolpath(self, layers: List[UniversalLayer], profile: MinimalPrintProfile) -> CLDataTrajectory:
+    def generate_toolpath(self, model: UniversalSlicedModel, profile: MinimalPrintProfile) -> CLDataTrajectory:
         """
-        Takes Universal Sliced Layers and a Minimal Print Profile to generate a Universal CL-Data Trajectory.
+        Takes a Universal Sliced Model (layers + metadata) and a Minimal Print Profile and generates a
+        Universal CL-Data Trajectory. Implementations must not modify `model`.
         """
         pass

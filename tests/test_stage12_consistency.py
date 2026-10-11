@@ -82,17 +82,17 @@ def test_progressive_tilt_stage2_points_lie_on_the_tilted_plane():
 
     profile = MinimalPrintProfile(layer_height=1.0, nozzle_diameter=0.4, num_perimeters=2,
                                   infill_density=0.2)
-    work = copy.deepcopy(model)
-    StandardToolpathGenerator().generate_toolpath(work, profile)   # replaces contours with features
+    gen = StandardToolpathGenerator()
+    features = gen.build_layer_features(model, profile, gen._strategy_from_metadata(model))
 
     checked = 0
     types = set()
-    for layer in work.layers:
+    for layer in model.layers:
         t = strat._get_tilt_for_layer(layer.layer_index)
         z0 = strat.start_z + layer.layer_index * strat.layer_height
         n = np.array([0.0, -np.sin(t), np.cos(t)])          # plane normal (independent of project_to_layer)
         o = np.array([0.0, strat.pivot_y, z0])
-        for c in layer.contours:
+        for c in features[layer.layer_index]:
             types.add(c.feature_type)
             for p in c.points:
                 assert abs(np.dot(n, np.array(p) - o)) < 1e-6
@@ -100,8 +100,9 @@ def test_progressive_tilt_stage2_points_lie_on_the_tilted_plane():
     assert checked > 200
     assert {"outer_wall", "inner_wall"} <= types
     # and the tilt really is non-trivial: some layer spans several mm in z (not horizontal)
-    spans = [max(p[2] for c in l.contours for p in c.points) - min(p[2] for c in l.contours for p in c.points)
-             for l in work.layers]
+    spans = [max(p[2] for c in features[l.layer_index] for p in c.points)
+             - min(p[2] for c in features[l.layer_index] for p in c.points)
+             for l in model.layers]
     assert spans[0] < 1e-6 and max(spans) > 2.0   # layer 0 is flat, later layers tilt
 
 
@@ -129,15 +130,16 @@ def test_external_field_end_to_end_stage1_json_stage2(tmp_path):
 
     profile = MinimalPrintProfile(layer_height=1.0, nozzle_diameter=0.4, num_perimeters=2,
                                   infill_density=0.2)
-    work = copy.deepcopy(loaded)
-    traj = StandardToolpathGenerator().generate_toolpath(work, profile)
+    gen = StandardToolpathGenerator()
+    traj = gen.generate_toolpath(loaded, profile)
+    features = gen.build_layer_features(loaded, profile, gen._strategy_from_metadata(loaded))
     assert len(traj.waypoints) > 100
     assert all(np.isfinite([w.x, w.y, w.z, w.i, w.j, w.k]).all() for w in traj.waypoints)
 
     # Geometry check: the layer surface is z' = c - f(x,y) = c - 0.05 x
-    for layer in work.layers:
+    for layer in loaded.layers:
         zp = layer.z_height
-        for c in layer.contours:
+        for c in features[layer.layer_index]:
             if c.feature_type != "outer_wall":
                 continue
             for p in c.points:
