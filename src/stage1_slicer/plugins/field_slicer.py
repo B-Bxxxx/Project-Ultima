@@ -112,32 +112,53 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
         """
         Converts unordered line segments (N, 2, 3) into ordered SpatialContours.
         """
-        import networkx as nx
-        G = nx.Graph()
+        # Segments -> polylines by TRACING (every segment is used exactly once).
+        # Why not nx.find_cycle: a plane that passes through a mesh vertex, or two vertices that
+        # round to the same key, gives nodes of degree > 2 or zero-length (self-loop) edges; the
+        # first cycle found then skips part of the loop (jagged contour) or is a 1-edge loop that
+        # silently throws the whole ring away.
         precision = 4
-
+        exact = {}
+        adj = {}
         for p1, p2 in segments:
-            p1_t = (round(p1[0], precision), round(p1[1], precision), round(p1[2], precision))
-            p2_t = (round(p2[0], precision), round(p2[1], precision), round(p2[2], precision))
-            G.add_node(p1_t, exact=p1)
-            G.add_node(p2_t, exact=p2)
-            G.add_edge(p1_t, p2_t)
+            k1 = (round(float(p1[0]), precision), round(float(p1[1]), precision), round(float(p1[2]), precision))
+            k2 = (round(float(p2[0]), precision), round(float(p2[1]), precision), round(float(p2[2]), precision))
+            if k1 == k2:
+                continue                                   # zero-length segment
+            exact.setdefault(k1, p1)
+            exact.setdefault(k2, p2)
+            adj.setdefault(k1, []).append(k2)
+            adj.setdefault(k2, []).append(k1)
 
+        used = set()
+
+        def take(u):
+            for v in adj[u]:
+                e = (u, v) if u <= v else (v, u)
+                if e not in used:
+                    used.add(e)
+                    return v
+            return None
+
+        def trace(start):
+            path = [start]
+            cur = start
+            while True:
+                nxt = take(cur)
+                if nxt is None:
+                    return path
+                path.append(nxt)
+                cur = nxt
+
+        # open paths first (they start at nodes of odd degree), then the closed loops
+        order = [k for k in adj if len(adj[k]) % 2 == 1] + list(adj)
         contours = []
-        for component in nx.connected_components(G):
-            subgraph = G.subgraph(component)
-            try:
-                cycle = nx.find_cycle(subgraph)
-                points = []
-                for u, v in cycle:
-                    points.append(tuple(float(x) for x in G.nodes[u]['exact']))
-                if points:
-                    points.append(points[0])
-                normals = [tuple(float(x) for x in default_normal)] * len(points)
-                contours.append(SpatialContour(points=points, normals=normals))
-            except nx.NetworkXNoCycle:
-                path_nodes = list(nx.dfs_preorder_nodes(subgraph))
-                points = [tuple(float(x) for x in G.nodes[n]['exact']) for n in path_nodes]
+        for start in order:
+            while True:
+                path = trace(start)
+                if len(path) < 2:
+                    break
+                points = [tuple(float(x) for x in exact[k]) for k in path]
                 normals = [tuple(float(x) for x in default_normal)] * len(points)
                 contours.append(SpatialContour(points=points, normals=normals))
 

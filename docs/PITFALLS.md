@@ -54,6 +54,10 @@ Problems and traps met while building the pipeline - raw material for the docume
 | 30 | GL rendering cannot be verified in the headless test environment. | open | Offscreen smoke tests only check the logic and that nothing raises. |
 | 31 | Function files used a `type` label while the real maths (tilt, cone) lived in Python - the file did not describe the function. | fixed | Version 2: the maths (expression / tilt_x_deg + pivot_y) is in the JSON; the editor is just a validated JSON text field. |
 | 32 | `custom_expr` did not refine the mesh, so a coarse mesh (a cube) was deformed only at its corners. | fixed | Same refinement as the conical strategy (`refine_mesh`, `refine_fraction`). |
+| 33 | **Contour assembly lost parts of a ring**: `nx.find_cycle` returned only the first cycle - with a plane through a mesh vertex (degree 4 node) or a zero-length segment (two points rounding to one key) the contour skipped a piece (jagged / cut-off rings) or the whole ring was replaced by a 1-edge loop. Seen on a hollow cylinder with the wave function. | fixed | Segments are traced (every segment used once, zero-length ones dropped); `tests/test_contour_assembly.py`. |
+| 34 | **Hungarian locale swallowed the decimal point**: typing `0.5` in a spin box gave 5, `12.75` gave 1275. | fixed | Decimal spin boxes use the C locale and accept `.` and `,`; keyboard tracking is off (value is committed on Enter / Tab / arrows, so typing no longer rebuilds the scene for every digit). `tests/test_input_widgets.py` runs with `hu_HU`. |
+| 35 | Spin box / combo arrows disappeared with the neon stylesheet (QSS cannot draw triangles from borders). | fixed | Arrow images are drawn once into a temp folder and referenced by the stylesheet. |
+| 36 | **Flat top face vs. non-planar layers**: the layers follow z = z0 - f(x, y) but the part's top is a flat plane, so the last layers are only partly there (terraces / a serrated rim). Expected geometry, not a slicing error. | open | Needs a top transition (the deformation fades out towards the top) - proposed, not implemented. |
 
 ## Process
 * A long single prompt overwhelms an assistant; split into small, verifiable tasks.

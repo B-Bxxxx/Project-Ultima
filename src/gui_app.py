@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 import trimesh
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QLocale, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton, QLabel,
     QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog, QLineEdit, QStackedWidget, QScrollArea,
@@ -48,11 +48,29 @@ class _NoWheel:
 
 
 class QDoubleSpinBox(_NoWheel, _QDoubleSpinBox):
-    pass
+    """
+    Decimal point AND decimal comma are accepted whatever the system language is. (With a Hungarian
+    locale Qt treats "." as a group separator and silently turns the typed "0.5" into 5.)
+    The value is always shown with a point, like in the JSON files.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setLocale(QLocale.c())
+        self.setGroupSeparatorShown(False)
+        self.setKeyboardTracking(False)     # commit on Enter / Tab / arrows, not on every typed digit
+
+    def validate(self, text, pos):
+        return super().validate(text.replace(",", "."), pos)
+
+    def valueFromText(self, text):
+        return super().valueFromText(text.replace(",", "."))
 
 
 class QSpinBox(_NoWheel, _QSpinBox):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setKeyboardTracking(False)
 
 
 class QComboBox(_NoWheel, _QComboBox):
@@ -170,7 +188,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(gui_theme.NAME)
-        self.setStyleSheet(gui_theme.STYLESHEET)
+        self.setStyleSheet(gui_theme.stylesheet())
         self.setGeometry(100, 100, 1500, 900)
 
         self.source_mesh = None      # geometry as generated / loaded

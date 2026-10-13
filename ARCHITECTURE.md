@@ -116,6 +116,8 @@ Execute with `pytest tests/`
 | `test_phase5_models.py` | Phase 5 logic | Placement (incl. Z offset), layer range, playback state machine, grouping by range. |
 | `test_function_import.py` | Stage 0 import | Expression/data file parsing and rejection of unsafe input, GridField interpolation, `grid_field` equals the equivalent expression end to end, JSON-safe metadata. |
 | `test_gui_smoke.py` | GUI | Offscreen: placement (Z offset only without drop-to-bed) invalidates results, camera framing, mouse wheel never edits a parameter, planar G-code has no B/C, separate retract/unretract, layer range / playback / status, function import (skipped without PyQt6). |
+| `test_contour_assembly.py` | Stage 1 contours | Zero-length segments, touching loops and open polylines are traced completely; both rings of a wave-deformed hollow cylinder are closed with the right length in every wall layer. |
+| `test_input_widgets.py` | GUI input | With a `hu_HU` locale: `.` and `,` both work, arrows / clicks / typing work in every visible spin box, a typed placement value is applied once on Enter. |
 | `test_editors.py` | GUI editors | Offscreen: JSON text is validated live, errors block Apply, Apply/Save as, Edit/New buttons add to the combos. |
 
 ## Layer convention (Stage 1)
