@@ -1,8 +1,12 @@
+import logging
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Tuple
 import trimesh
-from src.stage1_slicer.safe_expr import compile_expression, evaluate_compiled
+from src.stage1_slicer.safe_expr import compile_expression, evaluate_compiled, expression_names
+
+logger = logging.getLogger(__name__)
+
 
 class BaseSlicingStrategy(ABC):
     def __init__(self, params: Dict[str, Any] = None):
@@ -86,6 +90,12 @@ class BaseSlicingStrategy(ABC):
         """
         z_arr = np.asarray(z, dtype=float)
         f_arr = np.asarray(f_val, dtype=float)
+        if self.transition_height > 0.0 and f_arr.size and float(np.max(f_arr)) >= self.transition_height:
+            # z -> z' has the slope 1 / (1 - f/T) inside the transition zone: for f >= T it is no longer
+            # monotonic, i.e. the layer surfaces fold over and the slice may be wrong without any error.
+            logger.warning("max(f) = %.3g >= transition_height = %.3g: the deformation can fold the layers over; "
+                           "increase transition_height above max(f) or reduce the deformation.",
+                           float(np.max(f_arr)), self.transition_height)
         z_prime = z_arr.copy()
         residual = 0.0
         for _ in range(max_iter):
@@ -407,19 +417,25 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
 
     def _setup_field(self, params: Dict[str, Any]) -> None:
         self.expr = params.get("expression", "0.0")
+        # named numeric parameters of the expression (function files); {} for a plain expression
+        self.expr_params = {k: float(v) for k, v in dict(params.get("expression_params", {})).items()}
+        missing = expression_names(self.expr) - set(self.expr_params)
+        if missing:
+            raise ValueError(f"Expression uses undefined parameter(s) {sorted(missing)}")
         # Security (AGENTS.md "No Blind Eval"): the expression is validated against an
         # AST whitelist and compiled once; invalid/unsafe input raises ValueError here.
-        self._code = compile_expression(self.expr)
+        self._code = compile_expression(self.expr, self.expr_params.keys())
 
     def get_resolved_params(self) -> Dict[str, Any]:
         resolved = super().get_resolved_params()
         resolved["expression"] = self.expr
+        resolved["expression_params"] = dict(self.expr_params)
         return resolved
 
     def _evaluate(self, x, y):
         r = np.sqrt(x**2 + y**2)
         # Vectorized evaluation of the validated, pre-compiled expression
-        return evaluate_compiled(self._code, x, y, r)
+        return evaluate_compiled(self._code, x, y, r, self.expr_params)
 
     def get_layer_count(self) -> int:
         return self.num_layers
@@ -473,6 +489,7 @@ class GridFieldStrategy(CustomExpressionStrategy):
         from src.stage1_slicer.function_import import GridField
         self.field = GridField.from_params(params)
         self.expr = "grid_field"
+        self.expr_params = {}
 
     def _evaluate(self, x, y):
         return self.field.evaluate(x, y)

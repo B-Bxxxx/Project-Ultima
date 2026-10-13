@@ -174,3 +174,14 @@ def test_solve_forward_z_raises_clear_error_when_not_converging():
               "transition_height": 4.0, "refine_mesh": False}      # |f| up to ~27 >> transition_height
     with pytest.raises(ValueError, match="did not converge"):
         build_strategy("conical", mesh, params)
+
+
+def test_large_positive_field_warns_about_folding(caplog):
+    import logging
+    strat = build_strategy("planar", trimesh.creation.box(extents=(10, 10, 10)), {"layer_height": 1.0, "transition_height": 3.0})
+    with caplog.at_level(logging.WARNING):
+        strat._solve_forward_z(np.array([1.0, 5.0]), np.array([0.5, 2.0]))
+    assert not caplog.records                                    # max f < T: fine
+    with caplog.at_level(logging.WARNING):
+        strat._solve_forward_z(np.array([20.0, 25.0]), np.array([4.0, 3.5]))   # above the zone, converges at once
+    assert any("fold" in r.message for r in caplog.records)

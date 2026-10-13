@@ -68,9 +68,9 @@ def _check_module_attr(node: ast.Attribute, allowed: frozenset):
         _fail(f"'{node.value.id}.{node.attr}' is not an allowed name")
 
 
-def _validate(node: ast.AST) -> None:
+def _validate(node: ast.AST, names: frozenset = frozenset()) -> None:
     if isinstance(node, ast.Expression):
-        _validate(node.body)
+        _validate(node.body, names)
         return
 
     if isinstance(node, ast.Constant):
@@ -81,7 +81,7 @@ def _validate(node: ast.AST) -> None:
         return
 
     if isinstance(node, ast.Name):
-        if node.id not in ALLOWED_NAMES:
+        if node.id not in ALLOWED_NAMES and node.id not in names:
             _fail(f"unknown name '{node.id}'")
         return
 
@@ -90,14 +90,14 @@ def _validate(node: ast.AST) -> None:
             _fail(f"operator {type(node.op).__name__} is not allowed")
         if isinstance(node.op, ast.Pow) and not _is_small_number(node.right, MAX_EXPONENT):
             _fail(f"exponent must be a numeric literal with |n| <= {MAX_EXPONENT:g}")
-        _validate(node.left)
-        _validate(node.right)
+        _validate(node.left, names)
+        _validate(node.right, names)
         return
 
     if isinstance(node, ast.UnaryOp):
         if not isinstance(node.op, _ALLOWED_UNARYOPS):
             _fail(f"operator {type(node.op).__name__} is not allowed")
-        _validate(node.operand)
+        _validate(node.operand, names)
         return
 
     if isinstance(node, ast.Attribute):
@@ -123,14 +123,39 @@ def _validate(node: ast.AST) -> None:
         else:
             _fail("only direct function calls are allowed")
         for a in node.args:
-            _validate(a)
+            _validate(a, names)
         return
 
     _fail(f"{type(node).__name__} is not allowed")
 
 
-def compile_expression(expr: str):
-    """Validate `expr` and return a compiled code object (mode 'eval')."""
+RESERVED_NAMES = frozenset(ALLOWED_NAMES) | frozenset({"np", "math"}) | NP_FUNCS | MATH_FUNCS
+
+
+def check_parameter_name(name: str) -> None:
+    """User parameters (named numbers in a function file) must be plain identifiers that shadow nothing."""
+    if not isinstance(name, str) or not name.isidentifier() or name.startswith("_") or len(name) > 40:
+        _fail(f"invalid parameter name {name!r}")
+    if name in RESERVED_NAMES:
+        _fail(f"parameter name '{name}' is reserved")
+
+
+def expression_names(expr: str) -> set:
+    """All free variable names used by `expr` that are not built in (i.e. the parameters it needs)."""
+    tree = ast.parse(expr.strip(), mode="eval")
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    called = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return {n for n in used - called if n not in ALLOWED_NAMES and n not in ("np", "math")}
+
+
+def compile_expression(expr: str, parameters=()):
+    """
+    Validate `expr` and return a compiled code object (mode 'eval').
+    `parameters` are the names of user-defined numeric parameters the expression may use.
+    """
+    names = frozenset(parameters)
+    for n in names:
+        check_parameter_name(n)
     if not isinstance(expr, str):
         _fail("expression must be a string")
     if len(expr) > MAX_EXPR_LENGTH:
@@ -143,7 +168,7 @@ def compile_expression(expr: str):
     if sum(1 for _ in ast.walk(tree)) > MAX_NODES:
         _fail(f"expression too complex (more than {MAX_NODES} AST nodes)")
 
-    _validate(tree)
+    _validate(tree, names)
     return compile(tree, "<expression>", "eval")
 
 
@@ -152,8 +177,12 @@ _GLOBALS: Dict[str, Any] = {"__builtins__": {}, "np": np, "math": math}
 _GLOBALS.update({name: getattr(np, name) for name in NP_FUNCS})
 
 
-def evaluate_compiled(code, x, y, r) -> Any:
+def evaluate_compiled(code, x, y, r, parameters=None) -> Any:
     local_dict = {"x": x, "y": y, "r": r, "pi": math.pi, "e": math.e}
+    if parameters:
+        for k, v in parameters.items():
+            check_parameter_name(k)
+            local_dict[k] = float(v)
     try:
         return eval(code, _GLOBALS, local_dict)  # noqa: S307  (validated AST only)
     except ZeroDivisionError as exc:

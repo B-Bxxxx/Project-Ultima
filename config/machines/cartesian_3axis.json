@@ -1,0 +1,36 @@
+{
+  "format": "cam-machine",
+  "version": 1,
+  "name": "Generic 3-axis Cartesian",
+  "description": "Plain XYZ printer, vertical nozzle. Only X, Y and Z appear in the G-code.",
+  "kinematics": "planar_3axis_xyz",
+  "axes": [
+    "X",
+    "Y",
+    "Z"
+  ],
+  "build_volume": {
+    "x": [
+      0,
+      220
+    ],
+    "y": [
+      0,
+      220
+    ],
+    "z": [
+      0,
+      250
+    ]
+  },
+  "parameters": {
+    "max_3axis_tilt_deg": {
+      "label": "Max. surface tilt",
+      "unit": "deg",
+      "default": 25.0,
+      "min": 0.0,
+      "max": 90.0,
+      "description": "A warning is logged when a layer surface is tilted more than this."
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "format": "cam-function",
+  "version": 1,
+  "name": "Wave",
+  "description": "Example expression function: z = z0 - a*sin(x/b). Parameters used in the expression must be declared.",
+  "type": "expression",
+  "expression": "a * np.sin(x / b)",
+  "parameters": {
+    "a": {
+      "label": "Amplitude",
+      "unit": "mm",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 5.0,
+      "step": 0.1
+    },
+    "b": {
+      "label": "Wavelength factor",
+      "unit": "mm",
+      "default": 5.0,
+      "min": 0.5,
+      "max": 100.0,
+      "step": 0.5
+    }
+  }
+}

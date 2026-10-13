@@ -84,14 +84,15 @@ class GridField:
 class ExpressionField:
     """Validated, compiled expression f(x, y) with the same evaluate() interface as GridField."""
 
-    def __init__(self, expression: str):
+    def __init__(self, expression: str, parameters=None):
         self.expression = expression
-        self._code = compile_expression(expression)     # raises ValueError on unsafe/invalid input
+        self.parameters = {k: float(v) for k, v in (parameters or {}).items()}
+        self._code = compile_expression(expression, self.parameters.keys())   # raises ValueError on unsafe/invalid input
 
     def evaluate(self, x, y):
         x = np.asarray(x, float)
         y = np.asarray(y, float)
-        return evaluate_compiled(self._code, x, y, np.sqrt(x ** 2 + y ** 2))
+        return evaluate_compiled(self._code, x, y, np.sqrt(x ** 2 + y ** 2), self.parameters)
 
 
 # --------------------------------------------------------------------------------- A. expression

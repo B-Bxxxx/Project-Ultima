@@ -1,0 +1,69 @@
+{
+  "format": "cam-machine",
+  "version": 1,
+  "name": "Generic 5-axis trunnion table (XYZBC)",
+  "description": "Basic 5-axis machine: tilting (B) and rotating (C) table. Placeholder values - to be refined.",
+  "kinematics": "trunnion_table_xyzbc",
+  "axes": [
+    "X",
+    "Y",
+    "Z",
+    "B",
+    "C"
+  ],
+  "parameters": {
+    "b_axis_min": {
+      "label": "B min",
+      "unit": "deg",
+      "default": -90.0,
+      "min": -180.0,
+      "max": 180.0
+    },
+    "b_axis_max": {
+      "label": "B max",
+      "unit": "deg",
+      "default": 90.0,
+      "min": -180.0,
+      "max": 180.0
+    },
+    "c_axis_min": {
+      "label": "C min",
+      "unit": "deg",
+      "default": -36000.0,
+      "min": -360000.0,
+      "max": 360000.0
+    },
+    "c_axis_max": {
+      "label": "C max",
+      "unit": "deg",
+      "default": 36000.0,
+      "min": -360000.0,
+      "max": 360000.0
+    },
+    "pivot_offset_x": {
+      "label": "Pivot X",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "pivot_offset_y": {
+      "label": "Pivot Y",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "pivot_offset_z": {
+      "label": "Pivot Z",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "eccentricity_x": {
+      "label": "C eccentricity X",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "eccentricity_y": {
+      "label": "C eccentricity Y",
+      "unit": "mm",
+      "default": 0.0
+    }
+  }
+}

@@ -361,3 +361,52 @@ def test_negative_unretract_is_rejected():
         MinimalPrintProfile(unretract_distance=-0.1)
     with pytest.raises(Exception):
         MinimalPrintProfile(unretract_speed=0)
+
+
+# ---------------------------------------------------------------------------------------------
+# park + thickness model
+# ---------------------------------------------------------------------------------------------
+def _end_block(gcode):
+    cmds = parse(gcode)
+    i = next(k for k, c in enumerate(cmds) if c.code == "" and c.comment == "End G-Code")
+    return cmds[i + 1:]
+
+
+def test_end_block_lifts_a_configurable_distance_above_the_part():
+    gcode, _ = _gcode(park_lift=30.0)
+    top = max(c.params["Z"] for c in _body(parse(gcode)) if c.is_move and "Z" in c.params and c.params.get("E", 0) > 0)
+    lift = next(c for c in _end_block(gcode) if c.is_move)
+    assert lift.params["Z"] == pytest.approx(top + 30.0)
+    assert not any(c.params.get("Z") == 150 for c in _end_block(gcode))
+    gcode, _ = _gcode(park_lift=5.0)
+    assert next(c for c in _end_block(gcode) if c.is_move).params["Z"] == pytest.approx(top + 5.0)
+
+
+def test_park_resets_b_and_c_only_on_rotary_machines():
+    traj = _synthetic()
+    p3 = MinimalPrintProfile(include_rotary_axes=False)
+    p5 = MinimalPrintProfile(include_rotary_axes=True)
+    g3 = Klipper5AxisPostProcessor().generate_gcode(traj, p3)
+    g5 = Klipper5AxisPostProcessor().generate_gcode(traj, p5)
+    assert not any("B" in c.params or "C" in c.params for c in _end_block(g3) if c.is_move)
+    assert any(c.params.get("B") == 0 and c.params.get("C") == 0 for c in _end_block(g5) if c.is_move)
+
+
+def _tilted_traj(alignment):
+    from src.common.schemas import MachineTrajectory
+    s = _state(0, 0, 0.2, 0, travel=True)
+    e = MachineStateVector(x=5, y=0, z=0.2, b=0, c=0, layer_index=0, feature_type="outer_wall",
+                           extrusion_volume=1.0, feedrate=1500.0, tool_alignment=alignment)
+    return MachineTrajectory(states=[s, e])
+
+
+def test_nozzle_axis_model_scales_extrusion_by_the_actual_nozzle_angle():
+    def e_of(model, alignment):
+        profile = MinimalPrintProfile(include_rotary_axes=False, thickness_model=model)
+        g = Klipper5AxisPostProcessor().generate_gcode(_tilted_traj(alignment), profile)
+        return next(c for c in parse(g) if classify(c) == "extrude").params["E"]
+    base = e_of("stage1", 1.0)
+    assert e_of("stage1", 0.5) == pytest.approx(base)                 # stage1 ignores the nozzle axis
+    assert e_of("nozzle_axis", 1.0) == pytest.approx(base)            # aligned nozzle: unchanged
+    assert e_of("nozzle_axis", 0.5) == pytest.approx(base * 2.0, rel=1e-3)
+    assert e_of("nozzle_axis", 0.01) == pytest.approx(base / 0.2, rel=1e-3)     # grazing angle is capped

@@ -1,0 +1,8 @@
+{
+  "format": "cam-function",
+  "version": 1,
+  "name": "Planar",
+  "description": "Flat horizontal layers (standard slicing).",
+  "type": "planar",
+  "parameters": {}
+}

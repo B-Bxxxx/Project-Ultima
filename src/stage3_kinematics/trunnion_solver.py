@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver
+from src.stage3_kinematics.base import BaseKinematicSolver, tool_alignment
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 @KinematicsRegistry.register("trunnion_table_xyzbc")
@@ -134,6 +134,7 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 z=float(P_mach[2]),
                 b=float(b_deg),
                 c=float(c_deg),
+                tool_alignment=tool_alignment(wp, (-np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume,
                 feedrate=wp.feedrate,
                 is_travel_move=wp.is_travel_move,

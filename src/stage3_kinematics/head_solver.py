@@ -1,6 +1,6 @@
 import numpy as np
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver
+from src.stage3_kinematics.base import BaseKinematicSolver, tool_alignment
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 @KinematicsRegistry.register("swivel_head_xyzbc")
@@ -90,6 +90,7 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             state = MachineStateVector(
                 x=float(P_mach[0]), y=float(P_mach[1]), z=float(P_mach[2]),
                 b=float(b_deg), c=float(c_deg),
+                tool_alignment=tool_alignment(wp, (np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
                 feature_type=wp.feature_type,
                 layer_index=wp.layer_index
@@ -126,6 +127,7 @@ class Cartesian3AxisSolver(BaseKinematicSolver):
             state = MachineStateVector(
                 x=wp.x, y=wp.y, z=wp.z,
                 b=0.0, c=0.0,
+                tool_alignment=tool_alignment(wp, (0.0, 0.0, 1.0)),      # the nozzle of a 3-axis machine is always vertical
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
                 feature_type=wp.feature_type,
                 layer_index=wp.layer_index

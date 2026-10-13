@@ -37,7 +37,10 @@ G1 X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }} Z{{ "%.3f"|format(m.z) }}
 {% endfor %}
 ; -------------------
 ; End G-Code
-{{ cmd }} Z150{% if profile.include_rotary_axes %} B0 C0{% endif %} F{{ "%.0f"|format(profile.travel_speed) }}
+{{ cmd }} Z{{ "%.3f"|format(park_z) }} F{{ "%.0f"|format(profile.travel_speed) }}
+{% if profile.include_rotary_axes %}
+{{ cmd }} B0 C0 F{{ "%.0f"|format(profile.travel_speed) }}
+{% endif %}
 M104 S0 ; Turn off extruder
 M140 S0 ; Turn off bed
 M84 ; Disable motors

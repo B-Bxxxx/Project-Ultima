@@ -1,9 +1,10 @@
+import os
 import sys
 import time
 
 import numpy as np
 import trimesh
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton, QLabel,
     QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog, QLineEdit, QStackedWidget, QScrollArea,
@@ -18,14 +19,19 @@ import pyqtgraph.opengl as gl
 
 from src.common.feature_styles import FEATURE_STYLES, group_lines_by_feature
 from src.common.placement import place_mesh
-from src.common.schemas import MachineConfig, MinimalPrintProfile
+from src.common.schemas import MinimalPrintProfile
 from src.common.view_model import (Playback, effective_layers, head_item, layer_count, move_range,
                                    status_text)
-from src.stage1_slicer.function_import import (
-    ExpressionField, GridField, load_data_file, load_expression_file, preview_surface,
+from src.common.param_spec import ParamSpec
+from src.stage1_slicer.function_file import (
+    FunctionFileError, FunctionSpec, load_function_dir, load_function_file, save_function_file,
 )
+from src.stage1_slicer.function_import import ExpressionField, GridField, preview_surface
 from src.stage1_slicer.registry import PluginRegistry
 from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
+from src.stage3_kinematics.machine_file import (
+    MachineFileError, MachineSpec, load_machine_dir, load_machine_file, save_machine_file,
+)
 from src.stage3_kinematics.registry import KinematicsRegistry
 from src.stage4_postproc.klipper_postproc import Klipper5AxisPostProcessor
 
@@ -52,6 +58,74 @@ class QComboBox(_NoWheel, _QComboBox):
 
 class QSlider(_NoWheel, _QSlider):
     pass
+
+
+CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+
+
+class ParameterForm(QWidget):
+    """Builds one named input field per declared parameter (function files, machine files)."""
+    changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._form = QFormLayout(self)
+        self._form.setContentsMargins(0, 0, 0, 0)
+        self._widgets = {}
+        self._specs = {}
+
+    def set_specs(self, specs, values=None):
+        while self._form.rowCount():
+            self._form.removeRow(0)
+        self._widgets, self._specs = {}, dict(specs)
+        for name, sp in specs.items():
+            w = self._make(sp, (values or {}).get(name, sp.default))
+            label = sp.label or name
+            if sp.unit:
+                label += f" ({sp.unit})"
+            w.setToolTip(f"{name}" + (f" - {sp.description}" if sp.description else ""))
+            self._form.addRow(label + ":", w)
+            self._widgets[name] = w
+
+    def _make(self, sp: ParamSpec, value):
+        if sp.type == "bool":
+            w = QCheckBox()
+            w.setChecked(bool(value))
+            w.stateChanged.connect(lambda *_: self.changed.emit())
+        elif sp.type == "choice":
+            w = QComboBox()
+            w.addItems([str(c) for c in sp.choices])
+            w.setCurrentIndex(sp.choices.index(value))
+            w.currentIndexChanged.connect(lambda *_: self.changed.emit())
+        elif sp.type == "int":
+            w = QSpinBox()
+            w.setRange(int(sp.min if sp.min is not None else -10**9), int(sp.max if sp.max is not None else 10**9))
+            w.setSingleStep(int(sp.step or 1))
+            w.setValue(int(value))
+            w.valueChanged.connect(lambda *_: self.changed.emit())
+        else:
+            w = QDoubleSpinBox()
+            w.setDecimals(4)
+            w.setRange(sp.min if sp.min is not None else -1e9, sp.max if sp.max is not None else 1e9)
+            w.setSingleStep(sp.step or 0.1)
+            w.setValue(float(value))
+            w.valueChanged.connect(lambda *_: self.changed.emit())
+        return w
+
+    def values(self):
+        out = {}
+        for name, w in self._widgets.items():
+            sp = self._specs[name]
+            if sp.type == "bool":
+                out[name] = w.isChecked()
+            elif sp.type == "choice":
+                out[name] = sp.choices[w.currentIndex()]
+            else:
+                out[name] = w.value()
+        return out
+
+    def names(self):
+        return list(self._widgets)
 
 
 class CollapsibleSection(QWidget):
@@ -103,8 +177,6 @@ class MainWindow(QMainWindow):
         self.stage3_traj = None
         self.profile = None
         self.gcode = ""
-        self.grid_field = None       # GridField loaded from a data file
-        self.grid_name = ""
 
         self._grid_origin = (0.0, 0.0)
         self.playback = Playback()
@@ -284,43 +356,47 @@ class MainWindow(QMainWindow):
         self._update_z_offset_visibility()
 
     def _build_function_section(self):
-        sec = self._section("2. Stage 0 Function (f(x, y))", expanded=False)
+        sec = self._section("2. Function (deformation)", expanded=True)
         f = sec.form
-        note = QLabel("x, y = coordinates of the PLACED part on the bed. Layers follow z = z0 - f(x, y) "
-                      "(blended in over the transition height).")
-        note.setWordWrap(True)
-        f.addRow(note)
-        b1 = QPushButton("Load expression file...")
-        b1.clicked.connect(self.load_expression_from_file)
-        f.addRow(b1)
-        b2 = QPushButton("Load data file (x, y, f)...")
-        b2.clicked.connect(self.load_data_from_file)
-        f.addRow(b2)
-        self.lbl_field = QLabel("No function loaded.")
-        self.lbl_field.setWordWrap(True)
-        f.addRow(self.lbl_field)
+        self.function_combo = QComboBox()
+        f.addRow("Function:", self.function_combo)
+        self.lbl_function = QLabel("")
+        self.lbl_function.setWordWrap(True)
+        f.addRow(self.lbl_function)
+        self.function_form = ParameterForm()
+        f.addRow(self.function_form)
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        b1 = QPushButton("Load...")
+        b1.clicked.connect(self.load_function_from_file)
+        b2 = QPushButton("Save as...")
+        b2.clicked.connect(self.save_function_to_file)
+        b3 = QPushButton("Reload")
+        b3.clicked.connect(self.reload_functions)
+        for b in (b1, b2, b3):
+            rl.addWidget(b)
+        f.addRow(row)
         self.chk_field_preview = QCheckBox("Preview layer surface in Stage 0")
         self.chk_field_preview.stateChanged.connect(self.update_viewport)
         f.addRow(self.chk_field_preview)
+        note = QLabel("x, y = coordinates of the PLACED part on the bed; layers follow z = z0 - f(x, y).")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        f.addRow(note)
+        self.functions = {}
+        self.function_combo.currentTextChanged.connect(self.on_function_changed)
+        self.function_form.changed.connect(self._on_function_values_changed)
+        self.reload_functions()
 
     def _build_slicer_section(self):
         sec = self._section("3. Stage 1 Slicer")
         f = sec.form
-        self.strategy_combo = QComboBox()
-        self.strategy_combo.addItems(["planar", "progressive_tilt", "conical", "custom_expr", "grid_field"])
-        f.addRow("Strategy:", self.strategy_combo)
         self.layer_height_spin = self._dspin(0.4, 0.01, 5, 0.1)
         f.addRow("Layer Height:", self.layer_height_spin)
         self.trans_height_spin = self._dspin(2.0, 0.0, 100, 0.5)
         self.trans_height_spin.valueChanged.connect(self.update_viewport)
         f.addRow("Transition H:", self.trans_height_spin)
-        self.expr_label = QLabel("Expression:")
-        self.expr_input = QLineEdit("0.1 * x")
-        self.expr_label.hide()
-        self.expr_input.hide()
-        f.addRow(self.expr_label, self.expr_input)
-        self.expr_input.editingFinished.connect(self.update_viewport)
-        self.strategy_combo.currentTextChanged.connect(self.on_strategy_changed)
 
     def _build_profile_section(self):
         sec = self._section("4. Stage 2/4 Profile", expanded=False)
@@ -350,12 +426,40 @@ class MainWindow(QMainWindow):
         f.addRow("Z-hop (mm):", self.zhop_spin)
         self.hop_short_chk = QCheckBox("Z-hop on short travels too")
         f.addRow(self.hop_short_chk)
+        self.park_spin = self._dspin(30.0, 0.0, 500.0, 5.0, 1)
+        f.addRow("End lift above part (mm):", self.park_spin)
+        self.overlap_spin = self._dspin(0.15, 0.0, 0.5, 0.05)
+        f.addRow("Infill overlap (x nozzle):", self.overlap_spin)
+        self.thickness_combo = QComboBox()
+        self.thickness_combo.addItems(["auto", "stage1", "nozzle_axis"])
+        self.thickness_combo.setToolTip("auto: nozzle_axis on machines with rotary axes, stage1 on 3-axis machines")
+        f.addRow("Thickness model:", self.thickness_combo)
 
     def _build_kinematics_section(self):
-        sec = self._section("5. Kinematics", expanded=False)
-        self.topo_combo = QComboBox()
-        self.topo_combo.addItems(["planar_3axis_xyz", "trunnion_table_xyzbc", "swivel_head_xyzbc"])
-        sec.form.addRow("Topology:", self.topo_combo)
+        sec = self._section("5. Machine", expanded=False)
+        f = sec.form
+        self.machine_combo = QComboBox()
+        f.addRow("Machine:", self.machine_combo)
+        self.lbl_machine = QLabel("")
+        self.lbl_machine.setWordWrap(True)
+        f.addRow(self.lbl_machine)
+        self.machine_form = ParameterForm()
+        f.addRow(self.machine_form)
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        b1 = QPushButton("Load...")
+        b1.clicked.connect(self.load_machine_from_file)
+        b2 = QPushButton("Save as...")
+        b2.clicked.connect(self.save_machine_to_file)
+        b3 = QPushButton("Reload")
+        b3.clicked.connect(self.reload_machines)
+        for b in (b1, b2, b3):
+            rl.addWidget(b)
+        f.addRow(row)
+        self.machines = {}
+        self.machine_combo.currentTextChanged.connect(self.on_machine_changed)
+        self.reload_machines()
 
     def _build_view_section(self):
         sec = self._section("6. View", expanded=True)
@@ -407,12 +511,6 @@ class MainWindow(QMainWindow):
         f.addRow(self.play_slider)
 
     # ------------------------------------------------------------------ small slots
-    def on_strategy_changed(self, text):
-        show = text == "custom_expr"
-        self.expr_label.setVisible(show)
-        self.expr_input.setVisible(show)
-        self.update_viewport()
-
     def on_geom_changed(self):
         txt = self.geom_combo.currentText()
         if "Cylinder" in txt:
@@ -504,54 +602,151 @@ class MainWindow(QMainWindow):
             w.setCameraPosition(pos=Vector(float(centre[0]), float(centre[1]), float(centre[2])), distance=dist)
 
     # ------------------------------------------------------------------ Stage 0 function import
-    def load_expression_from_file(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "Open expression file", "",
-                                               "Expression files (*.txt *.json *.expr);;All files (*)")
-        if not fname:
+    # ------------------------------------------------------------------ function / machine files
+    def reload_functions(self):
+        """Reads config/functions/*.json (and keeps functions loaded from elsewhere)."""
+        keep = {n: sp for n, sp in getattr(self, "functions", {}).items()
+                if sp.source and os.path.dirname(os.path.abspath(sp.source)) != os.path.join(CONFIG_DIR, "functions")}
+        self.functions = dict(load_function_dir(os.path.join(CONFIG_DIR, "functions")))
+        self.functions.update(keep)
+        current = self.function_combo.currentText()
+        self.function_combo.blockSignals(True)
+        self.function_combo.clear()
+        self.function_combo.addItems(list(self.functions))
+        self.function_combo.blockSignals(False)
+        if current in self.functions:
+            self.function_combo.setCurrentText(current)
+        self.on_function_changed(self.function_combo.currentText())
+        errors = getattr(load_function_dir, "errors", {})
+        if errors:
+            self.lbl_function.setText("Skipped: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
+
+    def current_function(self):
+        return self.functions.get(self.function_combo.currentText())
+
+    def on_function_changed(self, name):
+        spec = self.functions.get(name)
+        if spec is None:
+            self.function_form.set_specs({})
+            self.lbl_function.setText("No function loaded.")
             return
-        try:
-            expr = load_expression_file(fname)
-        except (ValueError, OSError) as e:
-            self.lbl_field.setText(f"Error: {e}")
-            return
-        self.expr_input.setText(expr)
-        self.strategy_combo.setCurrentText("custom_expr")
-        self.lbl_field.setText(f"Expression loaded: {expr}")
-        self.chk_field_preview.setChecked(True)
+        self.function_form.set_specs(spec.parameters)
+        self.lbl_function.setText(spec.description)
         self.update_viewport()
 
-    def load_data_file_path(self, fname: str) -> bool:
-        try:
-            self.grid_field = load_data_file(fname)
-        except (ValueError, OSError) as e:
-            self.lbl_field.setText(f"Error: {e}")
-            return False
-        self.grid_name = fname.replace("\\", "/").split("/")[-1]
-        lo, hi = self.grid_field.value_range
-        x0, x1, y0, y1 = self.grid_field.bounds
-        self.lbl_field.setText(f"{self.grid_name}: {len(self.grid_field.xs)} x {len(self.grid_field.ys)} grid, "
-                               f"x {x0:g}..{x1:g}, y {y0:g}..{y1:g}, f {lo:.3g}..{hi:.3g}")
-        self.strategy_combo.setCurrentText("grid_field")
-        return True
-
-    def load_data_from_file(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "Open data file", "",
-                                               "Data files (*.csv *.txt *.dat);;All files (*)")
-        if fname and self.load_data_file_path(fname):
-            self.chk_field_preview.setChecked(True)
+    def _on_function_values_changed(self):
+        if self.chk_field_preview.isChecked():
             self.update_viewport()
 
-    def _active_field(self):
-        """The field object of the current strategy (for the preview), or None."""
-        name = self.strategy_combo.currentText()
-        if name == "grid_field":
-            return self.grid_field
-        if name == "custom_expr":
+    def add_function(self, spec: FunctionSpec):
+        self.functions[spec.name] = spec
+        self.function_combo.blockSignals(True)
+        if self.function_combo.findText(spec.name) < 0:
+            self.function_combo.addItem(spec.name)
+        self.function_combo.blockSignals(False)
+        self.function_combo.setCurrentText(spec.name)
+        self.on_function_changed(spec.name)
+
+    def load_function_path(self, fname: str) -> bool:
+        try:
+            spec = load_function_file(fname)
+        except FunctionFileError as e:
+            self.lbl_function.setText(f"Error: {e}")
+            return False
+        self.add_function(spec)
+        return True
+
+    def load_function_from_file(self):
+        fname, _ = QFileDialog.getOpenFileName(self, "Open function file", "", "Function files (*.json);;All files (*)")
+        if fname and self.load_function_path(fname):
+            self.chk_field_preview.setChecked(True)
+
+    def save_function_to_file(self):
+        spec = self.current_function()
+        if spec is None:
+            return
+        fname, _ = QFileDialog.getSaveFileName(self, "Save function file", f"{spec.name}.json", "Function files (*.json)")
+        if fname:
             try:
-                return ExpressionField(self.expr_input.text())
-            except ValueError as e:
-                self.lbl_field.setText(f"Error: {e}")
-        return None
+                save_function_file(spec, fname, self.function_form.values())
+                self.lbl_function.setText(f"Saved {os.path.basename(fname)} (the current values are its defaults).")
+            except (FunctionFileError, OSError) as e:
+                self.lbl_function.setText(f"Error: {e}")
+
+    def reload_machines(self):
+        keep = {n: sp for n, sp in getattr(self, "machines", {}).items()
+                if sp.source and os.path.dirname(os.path.abspath(sp.source)) != os.path.join(CONFIG_DIR, "machines")}
+        self.machines = dict(load_machine_dir(os.path.join(CONFIG_DIR, "machines")))
+        self.machines.update(keep)
+        current = self.machine_combo.currentText()
+        self.machine_combo.blockSignals(True)
+        self.machine_combo.clear()
+        self.machine_combo.addItems(list(self.machines))
+        self.machine_combo.blockSignals(False)
+        if current in self.machines:
+            self.machine_combo.setCurrentText(current)
+        self.on_machine_changed(self.machine_combo.currentText())
+        errors = getattr(load_machine_dir, "errors", {})
+        if errors:
+            self.lbl_machine.setText("Skipped: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
+
+    def current_machine(self):
+        return self.machines.get(self.machine_combo.currentText())
+
+    def on_machine_changed(self, name):
+        spec = self.machines.get(name)
+        if spec is None:
+            self.machine_form.set_specs({})
+            self.lbl_machine.setText("No machine loaded.")
+            return
+        self.machine_form.set_specs(spec.parameters)
+        self.lbl_machine.setText(f"Axes in the G-code: {' '.join(spec.axes)}. {spec.description}")
+
+    def load_machine_path(self, fname: str) -> bool:
+        try:
+            spec = load_machine_file(fname)
+        except MachineFileError as e:
+            self.lbl_machine.setText(f"Error: {e}")
+            return False
+        self.machines[spec.name] = spec
+        self.machine_combo.blockSignals(True)
+        if self.machine_combo.findText(spec.name) < 0:
+            self.machine_combo.addItem(spec.name)
+        self.machine_combo.blockSignals(False)
+        self.machine_combo.setCurrentText(spec.name)
+        self.on_machine_changed(spec.name)
+        return True
+
+    def load_machine_from_file(self):
+        fname, _ = QFileDialog.getOpenFileName(self, "Open machine file", "", "Machine files (*.json);;All files (*)")
+        if fname:
+            self.load_machine_path(fname)
+
+    def save_machine_to_file(self):
+        spec = self.current_machine()
+        if spec is None:
+            return
+        fname, _ = QFileDialog.getSaveFileName(self, "Save machine file", f"{spec.name}.json", "Machine files (*.json)")
+        if fname:
+            try:
+                save_machine_file(spec, fname, self.machine_form.values())
+                self.lbl_machine.setText(f"Saved {os.path.basename(fname)} (the current values are its defaults).")
+            except (MachineFileError, OSError) as e:
+                self.lbl_machine.setText(f"Error: {e}")
+
+    def _active_field(self):
+        """The field object of the current function (for the preview), or None (planar / tilt)."""
+        spec = self.current_function()
+        if spec is None or spec.type not in ("expression", "grid"):
+            return None
+        try:
+            params = spec.to_slicer_params(self.function_form.values())
+            if spec.type == "expression":
+                return ExpressionField(spec.expression, params["expression_params"])
+            return GridField.from_params(params)
+        except (FunctionFileError, ValueError) as e:
+            self.lbl_function.setText(f"Error: {e}")
+            return None
 
     def _field_preview_item(self):
         field = self._active_field()
@@ -569,7 +764,7 @@ class MainWindow(QMainWindow):
         # surface z = z0 + T - f(x, y); pyqtgraph wants z indexed [x, y]
         item = gl.GLSurfacePlotItem(x=xs, y=ys, z=(base - z).T, colors=colors.transpose(1, 0, 2),
                                     shader=None, smooth=False, computeNormals=False)
-        self.lbl_field.setText(f"{self.lbl_field.text().split(' | preview')[0]} | preview f {zlo:.3g}..{zhi:.3g}")
+        self.lbl_status.setText(f"Function preview: f = {zlo:.3g} .. {zhi:.3g}")
         return item
 
     # ------------------------------------------------------------------ view state
@@ -670,6 +865,12 @@ class MainWindow(QMainWindow):
             self._stop_timer()
 
     # ------------------------------------------------------------------ pipeline
+    def _thickness_model(self, machine: MachineSpec) -> str:
+        choice = self.thickness_combo.currentText()
+        if choice == "auto":
+            return "nozzle_axis" if machine.has_rotary_axes else "stage1"
+        return choice
+
     def run_pipeline(self):
         if self.mesh is None:
             return
@@ -679,20 +880,18 @@ class MainWindow(QMainWindow):
 
         t0 = time.time()
         try:
-            strategy = self.strategy_combo.currentText()
+            fspec = self.current_function()
+            mspec = self.current_machine()
+            if fspec is None:
+                raise ValueError("no function selected (config/functions is empty)")
+            if mspec is None:
+                raise ValueError("no machine selected (config/machines is empty)")
             s1_params = {
-                "strategy": strategy,
                 "layer_height": self.layer_height_spin.value(),
                 "transition_height": self.trans_height_spin.value(),
-                "start_tilt_deg": 0.0,
-                "end_tilt_deg": 30.0,
-                "cone_angle_deg": 15.0,
-                "expression": self.expr_input.text(),
             }
-            if strategy == "grid_field":
-                if self.grid_field is None:
-                    raise ValueError("grid_field strategy needs a data file (section 2, 'Load data file')")
-                s1_params.update(self.grid_field.to_params())
+            s1_params.update(fspec.to_slicer_params(self.function_form.values()))
+            machine_cfg = mspec.to_machine_config(self.machine_form.values())
             slicer_cls = PluginRegistry.get_plugin("universal_field_slicer")
             self.stage1_model = slicer_cls().slice(self.mesh, s1_params)
 
@@ -709,20 +908,18 @@ class MainWindow(QMainWindow):
                 retract_speed=self.retract_speed_spin.value(),
                 unretract_speed=self.unretract_speed_spin.value(),
                 # only the axes the machine really has appear in the G-code
-                include_rotary_axes=self.topo_combo.currentText() != "planar_3axis_xyz",
+                include_rotary_axes=mspec.has_rotary_axes,
+                park_lift=self.park_spin.value(),
+                infill_overlap=self.overlap_spin.value(),
+                thickness_model=self._thickness_model(mspec),
                 z_hop=self.zhop_spin.value(),
                 hop_short_travels=self.hop_short_chk.isChecked(),
             )
             self.profile = prof
             self.stage2_traj = StandardToolpathGenerator().generate_toolpath(self.stage1_model, prof)
 
-            cfg = MachineConfig(
-                kinematic_chain=self.topo_combo.currentText(),
-                b_axis_min=-90, b_axis_max=90,
-                c_axis_min=-36000, c_axis_max=36000,
-            )
-            solver_cls = KinematicsRegistry.get_solver(self.topo_combo.currentText())
-            self.stage3_traj = solver_cls().solve(self.stage2_traj, cfg)
+            solver_cls = KinematicsRegistry.get_solver(mspec.kinematics)
+            self.stage3_traj = solver_cls().solve(self.stage2_traj, machine_cfg)
 
             self.gcode = Klipper5AxisPostProcessor().generate_gcode(self.stage3_traj, prof)
             self.txt_gcode.setPlainText(self.gcode)
@@ -754,6 +951,8 @@ class MainWindow(QMainWindow):
 
     def update_viewport(self, *_):
         """Full redraw: grids, mesh, field preview (static) and then the toolpaths (dynamic)."""
+        if not hasattr(self, "gl_kine") or not hasattr(self, "lbl_status"):
+            return                                   # still building the UI
         self._dynamic = []
         for w in (self.gl_stage0, self.gl_stage1, self.gl_stage2, self.gl_kine):
             w.clear()
@@ -772,7 +971,7 @@ class MainWindow(QMainWindow):
                     if item is not None:
                         self.gl_stage0.addItem(item)
                 except Exception as e:            # a preview problem must never break the view
-                    self.lbl_field.setText(f"Preview error: {e}")
+                    self.lbl_function.setText(f"Preview error: {e}")
         self._refresh_paths()
 
     def _refresh_paths(self, *_):

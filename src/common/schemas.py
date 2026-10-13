@@ -25,6 +25,7 @@ class MinimalPrintProfile(BaseModel):
     bottom_solid_layers: int = Field(3, ge=0, description="Number of solid bottom skin layers (0 disables the bottom skin)")
     top_solid_layers: int = Field(3, ge=0, description="Number of solid top skin layers (0 disables the top skin)")
     infill_density: float = Field(0.2, ge=0.0, le=1.0, description="Sparse infill density as a FRACTION 0..1 (0.2 = 20 %)")
+    infill_overlap: float = Field(0.15, ge=0.0, le=0.5, description="Infill (and skin) lines reach this fraction of the nozzle diameter into the innermost wall / into each other, for a good bond. 0 = lines only touch.")
     infill_pattern: str = Field("lines", description="Infill pattern. Only 'lines' (parallel zigzag) is implemented; other values fall back to it with a warning.")
     infill_angle_deg: float = Field(45.0, description="Angle of infill in degrees")
     nozzle_diameter: float = Field(0.4, gt=0.0, description="Nozzle diameter in mm (also the line width)")
@@ -46,6 +47,11 @@ class MinimalPrintProfile(BaseModel):
     unretract_distance: Optional[float] = Field(None, ge=0.0, description="Filament pushed back in mm right before printing resumes (0 = no prime move); defaults to retract_distance")
     z_hop: float = Field(0.4, ge=0.0, description="Z-hop height in mm during travel moves (0 disables the hop)")
     min_retract_travel: float = Field(1.5, ge=0.0, description="Travels shorter than this (mm) are made directly, without retraction and Z-hop")
+    park_lift: float = Field(30.0, ge=0.0, description="At the end of the print the nozzle travels this far (mm) above the highest point of the part")
+    thickness_model: Literal["stage1", "nozzle_axis"] = Field(
+        "stage1", description="'stage1': extrusion from the Stage 1/2 layer thickness (normal to the layer). "
+                              "'nozzle_axis': thickness measured along the ACTUAL nozzle axis, t / cos(angle between nozzle axis and layer normal) "
+                              "- use it for 5-axis machines (and vertical-nozzle tilted layers).")
     hop_short_travels: bool = Field(False, description="Z-hop also on travels shorter than min_retract_travel (they are still made without retraction).")
     travel_command: Literal["G0", "G1"] = Field("G0", description="G-code command used for non-extruding moves (G0 rapid or G1 linear)")
 
@@ -163,6 +169,7 @@ class MachineStateVector(BaseModel):
     is_travel_move: bool = Field(False, description="True if this is a travel move")
     feature_type: str = Field("outer_wall", description="Type of feature")
     layer_index: int = Field(0, description="Index of the layer this state belongs to (copied unchanged from the CL waypoint)")
+    tool_alignment: float = Field(1.0, description="cos of the angle between the ACTUAL nozzle axis (after axis limits / for a 3-axis machine: vertical) and the layer surface normal, in the part frame. 1.0 = nozzle along the normal.")
 
 
 class MachineTrajectory(BaseModel):

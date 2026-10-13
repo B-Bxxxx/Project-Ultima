@@ -69,34 +69,66 @@ def test_layer_range_playback_and_status(win):
     assert not win.playback.playing and win.playback.shown == win.playback.total
 
 
-def test_function_import_into_the_gui(win, tmp_path):
-    expr = tmp_path / "f.txt"
-    expr.write_text("# slope\n0.05 * x\n")
-    from src.stage1_slicer.function_import import load_expression_file
-    win.expr_input.setText(load_expression_file(str(expr)))
-    win.strategy_combo.setCurrentText("custom_expr")
+def test_shipped_functions_and_machines_are_listed(win):
+    assert [win.function_combo.itemText(i) for i in range(win.function_combo.count())] == ["Planar", "Progressive tilt"]
+    assert win.machine_combo.count() == 2
+    assert win.function_form.names() == []                      # planar has no parameters
+    win.function_combo.setCurrentText("Progressive tilt")
+    assert win.function_form.names() == ["start_tilt_deg", "end_tilt_deg"]
+
+
+def test_function_parameters_become_named_fields_and_drive_the_slice(win, tmp_path):
+    import json
+    spec = {"format": "cam-function", "version": 1, "name": "Slope", "type": "expression", "expression": "a * x",
+            "parameters": {"a": {"label": "Slope", "unit": "mm/mm", "default": 0.05, "min": 0, "max": 1, "step": 0.01}}}
+    p = tmp_path / "slope.json"
+    p.write_text(json.dumps(spec))
+    assert win.load_function_path(str(p))
+    assert win.function_combo.currentText() == "Slope" and win.function_form.names() == ["a"]
+    assert win.function_form.values() == {"a": 0.05}
+    win.chk_field_preview.setChecked(True)
+    win.run_pipeline()
+    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
+    top = [w for w in win.stage2_traj.waypoints if w.layer_index == win._layer_total() - 1 and not w.is_travel_move]
+    import numpy as np
+    assert np.polyfit([w.x for w in top], [w.z for w in top], 1)[0] == pytest.approx(-0.05, abs=0.005)
+    # a changed field value changes the result
+    win.function_form._widgets["a"].setValue(0.0)
+    assert win.function_form.values() == {"a": 0.0}
+    win.run_pipeline()
+    top = [w for w in win.stage2_traj.waypoints if w.layer_index == win._layer_total() - 1 and not w.is_travel_move]
+    assert np.ptp([w.z for w in top]) < 1e-6
+
+
+def test_invalid_function_and_machine_files_report_errors(win, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"format": "cam-function", "version": 1, "name": "B", "type": "expression", "expression": "a*x"}')
+    assert not win.load_function_path(str(bad))
+    assert win.lbl_function.text().startswith("Error") and "'a'" in win.lbl_function.text()
+    assert not win.load_machine_path(str(bad))
+    assert win.lbl_machine.text().startswith("Error")
+
+
+def test_grid_function_from_a_data_file(win, tmp_path):
+    import json
+    (tmp_path / "f.csv").write_text("x,y,f\n" + "\n".join(f"{x},{y},{0.05 * x}" for x in range(-20, 21, 5) for y in range(-20, 21, 5)))
+    (tmp_path / "g.json").write_text(json.dumps({"format": "cam-function", "version": 1, "name": "Grid", "type": "grid",
+                                                 "data_file": "f.csv", "parameters": {}}))
+    assert win.load_function_path(str(tmp_path / "g.json"))
     win.chk_field_preview.setChecked(True)
     win.run_pipeline()
     assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
 
-    data = tmp_path / "g.csv"
-    data.write_text("x,y,f\n" + "\n".join(f"{x},{y},{0.05 * x}" for x in range(-20, 21, 5) for y in range(-20, 21, 5)))
-    assert win.load_data_file_path(str(data))
-    assert win.strategy_combo.currentText() == "grid_field"
-    win.run_pipeline()
-    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
-    assert "preview" not in win.lbl_metrics.text()
 
-    bad = tmp_path / "bad.csv"
-    bad.write_text("1 2\n")
-    assert not win.load_data_file_path(str(bad))
-    assert win.lbl_field.text().startswith("Error")
-
-
-def test_grid_strategy_without_data_reports_an_error(win):
-    win.strategy_combo.setCurrentText("grid_field")
-    win.run_pipeline()
-    assert win.lbl_metrics.text().startswith("Error") and "data file" in win.lbl_metrics.text()
+def test_function_and_machine_sections_can_be_saved_with_new_defaults(win, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QFileDialog
+    from src.stage1_slicer.function_file import load_function_file
+    win.function_combo.setCurrentText("Progressive tilt")
+    win.function_form._widgets["end_tilt_deg"].setValue(15.0)
+    out = tmp_path / "t.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out), "")))
+    win.save_function_to_file()
+    assert load_function_file(str(out)).defaults()["end_tilt_deg"] == 15.0
 
 
 def test_legend_sections_and_controls_exist(win):
@@ -140,7 +172,7 @@ def test_camera_follows_the_part_in_xy_but_the_grid_stays_on_the_bed(win):
 def test_wheel_never_changes_a_parameter(win):
     from PyQt6.QtCore import QPoint, QPointF, Qt
     from PyQt6.QtGui import QWheelEvent
-    widgets = [win.layer_height_spin, win.perims_spin, win.strategy_combo, win.layer_hi, win.travel_cmd_combo,
+    widgets = [win.layer_height_spin, win.perims_spin, win.function_combo, win.machine_combo, win.layer_hi, win.travel_cmd_combo,
                win.play_slider, win.retract_spin]
     for w in widgets:
         before = w.value() if hasattr(w, "value") else w.currentIndex()
@@ -154,11 +186,12 @@ def test_wheel_never_changes_a_parameter(win):
 
 
 def test_planar_gcode_has_only_xyz_but_a_trunnion_machine_gets_b_and_c(win):
+    win.machine_combo.setCurrentText("Generic 3-axis Cartesian")
     win.run_pipeline()
     assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
     moves = [ln for ln in win.gcode.splitlines() if ln.startswith(("G0 ", "G1 "))]
     assert moves and not any(" B" in ln or " C" in ln for ln in moves)
-    win.topo_combo.setCurrentText("trunnion_table_xyzbc")
+    win.machine_combo.setCurrentText("Generic 5-axis trunnion table (XYZBC)")
     win.run_pipeline()
     assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
     assert any(" B" in ln and " C" in ln for ln in win.gcode.splitlines() if ln.startswith("G1 X"))
@@ -173,3 +206,21 @@ def test_retract_and_unretract_come_from_separate_fields(win):
     assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
     assert "G1 E-0.600 F1800 ; Retract" in win.gcode
     assert "G1 E0.900 F900 ; Prime" in win.gcode
+
+
+def test_end_block_uses_the_lift_and_thickness_model_follows_the_machine(win):
+    win.machine_combo.setCurrentText("Generic 3-axis Cartesian")
+    win.park_spin.setValue(12.0)
+    win.run_pipeline()
+    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
+    assert win.profile.thickness_model == "stage1" and win.profile.park_lift == 12.0
+    assert "Z150" not in win.gcode
+    top = max(s.z for s in win.stage3_traj.states)
+    end = win.gcode.split("; End G-Code")[1]
+    assert f"Z{top + 12.0:.3f}" in end
+    win.machine_combo.setCurrentText("Generic 5-axis trunnion table (XYZBC)")
+    win.run_pipeline()
+    assert win.profile.thickness_model == "nozzle_axis"
+    win.thickness_combo.setCurrentText("stage1")
+    win.run_pipeline()
+    assert win.profile.thickness_model == "stage1"
