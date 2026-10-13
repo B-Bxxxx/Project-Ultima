@@ -11,6 +11,7 @@ from src.stage4_postproc.base import BasePostProcessor
 
 LAYER_MARKER_RE = re.compile(r"^;LAYER:(\d+)\s*$")
 FOOTER_MARKER = "; End G-Code"
+MIN_TOOL_ALIGNMENT = 0.2          # cos(78 deg): limits the thickness correction of nozzle_axis
 
 
 @dataclass
@@ -68,14 +69,17 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
         into), ';LAYER_COUNT:N' in the header
       * '; TYPE: <feature>' before the first extrusion of every layer and whenever the feature changes
       * every travel of at least `min_retract_travel` is: retract -> Z-hop up -> travel -> Z-hop
-        down -> prime; shorter travels are made directly. The travel and hop moves use
+        down -> prime (retract and unretract distance / speed are separate parameters); shorter travels are made directly. The travel and hop moves use
         `profile.travel_command` (G0 or G1).
+      * thickness_model 'nozzle_axis': E is scaled by 1 / cos(angle between nozzle axis and layer normal)
+      * the end block lifts the nozzle `park_lift` mm above the highest point of the part (no fixed Z)
       * no heater commands are written at the start (temperatures are handled by the printer
         configuration / start macro)
     """
 
     def generate_gcode(self, trajectory: MachineTrajectory, profile: MinimalPrintProfile) -> str:
         moves = self._plan_moves(trajectory.states, profile)
+        park_z = max((s.z for s in trajectory.states), default=0.0) + profile.park_lift
         layer_count = len({s.layer_index for s in trajectory.states})
 
         template_dir = os.path.join(os.path.dirname(__file__), "templates")
@@ -83,7 +87,7 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
                           keep_trailing_newline=True)
         template = env.get_template("klipper_5axis.gcode.j2")
         return template.render(moves=moves, profile=profile, cmd=profile.travel_command,
-                               layer_count=layer_count)
+                               layer_count=layer_count, park_z=park_z)
 
     def generate_gcode_layers(self, trajectory: MachineTrajectory, profile: MinimalPrintProfile) -> GcodeLayers:
         """The same G-code, split into header / per-layer blocks / footer."""
@@ -115,7 +119,11 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
             if s.is_travel_move:
                 move.update(self._plan_travel(prev, s, profile))
             else:
-                move["e"] = s.extrusion_volume / area
+                volume = s.extrusion_volume
+                if profile.thickness_model == "nozzle_axis":
+                    # thickness along the real nozzle axis (guarded against grazing angles)
+                    volume /= max(s.tool_alignment, MIN_TOOL_ALIGNMENT)
+                move["e"] = volume / area
                 if s.feature_type != last_type:
                     move["type_marker"] = s.feature_type
                     last_type = s.feature_type
@@ -131,16 +139,19 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
         if prev is None:
             # First move of the print: nothing to retract; lift first so the nozzle never
             # drags across the bed on the way to the start point.
-            return {"retract": False, "hop": hop, "lift_z": s.z + profile.z_hop}
+            return {"retract": False, "prime": False, "hop": hop, "lift_z": s.z + profile.z_hop}
 
         distance = math.dist((prev.x, prev.y, prev.z), (s.x, s.y, s.z))
         if distance < profile.min_retract_travel:
             # short: never retract; hop only if requested
-            return {"retract": False, "hop": hop and profile.hop_short_travels,
+            return {"retract": False, "prime": False, "hop": hop and profile.hop_short_travels,
                     "lift_z": max(prev.z, s.z) + profile.z_hop}
 
+        retract = profile.retract_distance > 0.0
         return {
-            "retract": profile.retract_distance > 0.0,
+            "retract": retract,
+            # the filament pulled back before the travel is pushed back after it, right before printing
+            "prime": retract and profile.unretract_distance > 0.0,
             "hop": hop,
             # lift above the HIGHER of both ends so layer changes clear the new layer as well
             "lift_z": max(prev.z, s.z) + profile.z_hop,

@@ -1,0 +1,66 @@
+# Pitfalls log
+
+Problems and traps met while building the pipeline - raw material for the documentation and for the
+"known pitfalls" chapter. Newest entries at the bottom of each section. **Status:** fixed / open / by design.
+
+## Slicing and geometry
+| # | Pitfall | Status | Notes |
+|---|---------|--------|-------|
+| 1 | **Slice plane on a face.** Slicing at z = 0 (first layer) or exactly at the top coincides with the bottom/top face; the result depends on the mesh library. | fixed | Layers are cut from the mid-plane (`z' - h/2`) and printed at the layer top (`z'`). See ARCHITECTURE "Layer convention". |
+| 2 | **First layer at z = 0.** The nozzle would be on the bed. | fixed | The `start_z` parameter is the BASE of the print; layer 0 is printed at `start_z + h`. |
+| 3 | **Fold-over of the deformation.** z' = z + w(z')·f is only monotonic while f < transition_height; a larger positive f can converge to a folded solution without any error. | warning | `_solve_forward_z` logs a warning when max(f) >= T; a hard preflight check is still to do. |
+| 4 | **Non-convergence** of the forward iteration for steep negative fields. | fixed | Raises a ValueError with the residual. |
+| 5 | **Stage 1 vs Stage 2 drift.** Stage 2 rebuilt the strategy with different defaults (start_z, pivot_y) than Stage 1 used. | fixed | The RESOLVED parameters are stored in the model metadata; a consistency test compares both stages layer by layer. |
+| 6 | **Stage 2 mutated its input contours**, so tests passed vacuously. | fixed | Stage 2 never modifies the model; tests assert immutability and `checked > N` guards against empty checks. |
+| 7 | **Tilt normals** are blended with the flat normal in the transition zone, while the slice plane is not blended. | open | Only matters with `transition_height > 0` and tilt. |
+| 8 | **Tilt pivot** at the lowest-Y edge keeps z >= 0 but makes the tilt direction fixed (about X). | by design | Other tilt axes need a function file type of their own. |
+
+## Toolpath (Stage 2)
+| # | Pitfall | Status | Notes |
+|---|---------|--------|-------|
+| 9 | **Infill links.** A zigzag link that leaves the region must not be drawn through the wall; it starts a new chain instead (extra travels). | fixed | `fill_region(..., link_tol)`; chains do not follow the boundary yet (open improvement). |
+| 10 | **Skin / core / wall seams.** Regions only touch, which leaves a hairline gap. | fixed | `infill_overlap` (default 0.15 x nozzle) grows the filled region; it never reaches beyond the centre line of the innermost wall. |
+| 11 | **Nesting parity.** Holes/islands must follow the nesting depth of the contours, not their orientation. | fixed | |
+| 12 | **Skin detection** compares each layer with its neighbours by `layer_index`, not by Z (tilted layers have no common Z). | fixed | A gap in the numbering is treated as a surface. |
+| 13 | `infill_pattern` accepts only `lines`; others fall back with a warning. | open | |
+
+## Extrusion
+| # | Pitfall | Status | Notes |
+|---|---------|--------|-------|
+| 14 | **Which thickness?** Stage 1 gives the layer thickness NORMAL to the layer. With a vertical nozzle on a tilted layer the gap along the nozzle is t / cos(tilt) (about 8 % more at 20 degrees, measured). | by design | `thickness_model`: `stage1` (default for 3-axis) or `nozzle_axis` (E scaled by 1 / cos(angle between nozzle axis and layer normal), capped at cos 78 degrees). The GUI chooses automatically (`auto`): rotary machine -> `nozzle_axis`. To be validated with real prints. |
+| 15 | **Relative E and retract accounting.** Every retract must be matched by a prime before the next extrusion; retract and unretract are separate parameters. | fixed | Tests parse the G-code and check the balance. |
+| 16 | **G-code text tests** break with every template change. | fixed | `tests/gcode_tools.py` parses the semantics (moves, axes, E) instead. |
+| 17 | Travel at z = 0 / no Z-hop on short travels looked like a bug. | by design | Short travels (< `min_retract_travel`) are direct; `hop_short_travels` adds the hop. |
+| 18 | **Fixed park position** (Z150) can be inside the part or below the build volume. | fixed | End block lifts `park_lift` above the highest point of the print. |
+| 19 | **Axes in the G-code.** B/C were always written, even for a 3-axis machine. | fixed | The machine file's `axes` decide; `include_rotary_axes` is derived from it. |
+
+## Machine and function files
+| # | Pitfall | Status | Notes |
+|---|---------|--------|-------|
+| 20 | Expressions come from files: never `eval` blindly (AGENTS.md rule 5). | fixed | AST whitelist; user parameters must be plain identifiers that shadow nothing. |
+| 21 | **Silent defaults hide mistakes.** A function that needs a parameter it does not declare, or a machine with rotary axes but no limits, is an error. | by design | `FunctionFileError` / `MachineFileError` name the missing element. |
+| 22 | **Coordinate reference of f(x, y).** Which x, y does the function see? | decided | The placed part on the bed. Re-check when 5-axis work starts. |
+| 23 | Rotary kinematics are not validated (first tests are 3-axis). | open | Tool-axis alignment is recorded per state (`tool_alignment`) for later checks. |
+
+## GUI
+| # | Pitfall | Status | Notes |
+|---|---------|--------|-------|
+| 24 | Many fields in a fixed-height column overlap each other. | fixed | Scroll area + collapsible sections. |
+| 25 | **Mouse wheel changed parameters** while scrolling the menu. | fixed | Spin boxes, combo boxes and sliders ignore the wheel. |
+| 26 | `QCheckBox` does not render HTML (the legend showed raw `<span>`). | fixed | Plain text, coloured by stylesheet. |
+| 27 | A dropped `QApplication` reference aborts Python in tests. | fixed | Kept alive in the test module. |
+| 28 | A far-away part (offset 120 / 80) left the camera behind. | fixed | The camera and the floor grid follow the part in X/Y; Z is never faked. |
+| 29 | `trimesh` boolean (hollow cube) needs an external engine that is not always installed. | removed | The hollow cube was dropped; the hollow cylinder needs no engine. |
+| 30 | GL rendering cannot be verified in the headless test environment. | open | Offscreen smoke tests only check the logic and that nothing raises. |
+| 31 | Function files used a `type` label while the real maths (tilt, cone) lived in Python - the file did not describe the function. | fixed | Version 2: the maths (expression / tilt_x_deg + pivot_y) is in the JSON; the editor is just a validated JSON text field. |
+| 32 | `custom_expr` did not refine the mesh, so a coarse mesh (a cube) was deformed only at its corners. | fixed | Same refinement as the conical strategy (`refine_mesh`, `refine_fraction`). |
+| 33 | **Contour assembly lost parts of a ring**: `nx.find_cycle` returned only the first cycle - with a plane through a mesh vertex (degree 4 node) or a zero-length segment (two points rounding to one key) the contour skipped a piece (jagged / cut-off rings) or the whole ring was replaced by a 1-edge loop. Seen on a hollow cylinder with the wave function. | fixed | Segments are traced (every segment used once, zero-length ones dropped); `tests/test_contour_assembly.py`. |
+| 34 | **Hungarian locale swallowed the decimal point**: typing `0.5` in a spin box gave 5, `12.75` gave 1275. | fixed | Decimal spin boxes use the C locale and accept `.` and `,`; keyboard tracking is off (value is committed on Enter / Tab / arrows, so typing no longer rebuilds the scene for every digit). `tests/test_input_widgets.py` runs with `hu_HU`. |
+| 35 | Spin box / combo arrows disappeared with the neon stylesheet (QSS cannot draw triangles from borders). | fixed | Arrow images are drawn once into a temp folder and referenced by the stylesheet. |
+| 36 | **Flat top face vs. non-planar layers**: the layers follow z = z0 - f(x, y) but the part's top is a flat plane, so the last layers are only partly there (terraces / a serrated rim). Expected geometry, not a slicing error. | open | Needs a top transition (the deformation fades out towards the top) - proposed, not implemented. |
+| 37 | **"did not converge" on a harmless negative field** (V-groove f = -k*abs(x), |f| 7.5 > transition_height 5): the old fixed-point iteration for z' = z + w(z')*f needs |f| < T although the equation always has an exact solution for f < T. | fixed | Closed-form solution (w is piecewise linear), no iteration; only f >= T (real fold) is warned about. Note: a negative f inside the transition zone makes the real layer spacing larger, up to h * (1 + |f| / T). |
+
+## Process
+* A long single prompt overwhelms an assistant; split into small, verifiable tasks.
+* A branch that deletes unrelated files can look like a successful implementation - always diff against main before merging.
+* Update ARCHITECTURE.md in the same commit as the code (AGENTS.md rule 2).

@@ -446,7 +446,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             # 2. solid skin (100 % density, +-45 deg alternating per layer)
             solid_angle = SOLID_INFILL_ANGLE_DEG if layer_idx % 2 == 0 else -SOLID_INFILL_ANGLE_DEG
             solid_spacing = profile.nozzle_diameter
+            grow = profile.infill_overlap * profile.nozzle_diameter      # small overlap into the wall / between skin and core
             for f_type, geom in (("bottom_solid", plan.bottom_solid), ("top_solid", plan.top_solid)):
+                if grow > 0 and not geom.is_empty:
+                    geom = geom.buffer(grow)
                 for chain in fill_region(geom, solid_spacing, solid_angle):
                     add_contour(chain, f_type)
 
@@ -455,7 +458,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             if density > 0 and not plan.sparse.is_empty:
                 spacing = profile.nozzle_diameter / min(density, 1.0)
                 angle = profile.infill_angle_deg if layer_idx % 2 == 0 else -profile.infill_angle_deg
-                for chain in fill_region(plan.sparse, spacing, angle):
+                sparse = plan.sparse.buffer(grow) if grow > 0 else plan.sparse
+                for chain in fill_region(sparse, spacing, angle):
                     add_contour(chain, "infill")
 
             out_layers.append(UniversalLayer(layer_index=layer_idx, z_height=layer.z_height,

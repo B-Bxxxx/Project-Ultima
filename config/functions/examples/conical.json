@@ -1,0 +1,17 @@
+{
+  "format": "cam-function",
+  "version": 2,
+  "name": "Conical",
+  "description": "Layers rise with the distance from the origin: z = z0 - r*tan(angle). Needs the part around x = y = 0 (or set the origin by placement).",
+  "expression": "r * tan(radians(cone_angle_deg))",
+  "parameters": {
+    "cone_angle_deg": {
+      "label": "Cone angle",
+      "unit": "deg",
+      "default": 15.0,
+      "min": -45.0,
+      "max": 45.0,
+      "step": 1.0
+    }
+  }
+}
