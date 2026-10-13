@@ -42,7 +42,7 @@ def test_open_polyline_stays_open():
 
 
 def test_wave_on_a_hollow_cylinder_keeps_both_rings_closed_in_every_wall_layer():
-    spec = load_function_file(os.path.join(ROOT, "config", "functions", "examples", "wave.json"))
+    spec = load_function_file(os.path.join(ROOT, "config", "functions", "wave.json"))
     mesh = trimesh.creation.annulus(r_min=10, r_max=15, height=20)
     mesh.apply_translation((0, 0, 10))
     model = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 0.4, "transition_height": 2.0, **spec.to_slicer_params()})

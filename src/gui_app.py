@@ -8,9 +8,8 @@ from PyQt6.QtCore import QLocale, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton, QLabel,
     QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog, QLineEdit, QStackedWidget, QScrollArea,
-    QToolButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
+    QToolButton, QFrame, QSizePolicy,
 )
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QComboBox as _QComboBox
 from PyQt6.QtWidgets import QDoubleSpinBox as _QDoubleSpinBox
 from PyQt6.QtWidgets import QSlider as _QSlider
@@ -31,6 +30,7 @@ from src.stage1_slicer.function_file import (
 )
 from src.stage1_slicer.function_import import ExpressionField, GridField, preview_surface
 from src.stage1_slicer.registry import PluginRegistry
+from src.stage1_slicer.transition_advice import advise, field_range
 from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 from src.stage3_kinematics.machine_file import (
     MachineFileError, MachineSpec, load_machine_dir, load_machine_file, save_machine_file,
@@ -209,6 +209,11 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.load_geometry()
+        for w in (self.trans_height_spin, self.layer_height_spin, self.nozzle_spin):
+            w.valueChanged.connect(self.update_transition_advice)
+        self.function_form.changed.connect(self.update_transition_advice)
+        self.function_combo.currentTextChanged.connect(self.update_transition_advice)
+        self.update_transition_advice()
 
     # ------------------------------------------------------------------------------- UI
     def init_ui(self):
@@ -222,14 +227,9 @@ class MainWindow(QMainWindow):
         left_outer = QVBoxLayout(left_panel)
         left_outer.setContentsMargins(0, 0, 0, 0)
 
-        brand = QLabel("ULTIMA")
+        brand = QLabel(f'<span style="color:{gui_theme.TEXT}">ULTIMA</span> <span style="color:{gui_theme.CORAL}">slicer</span>')
         brand.setObjectName("brand")
-        glow = QGraphicsDropShadowEffect(brand)
-        glow.setColor(QColor(gui_theme.CYAN))
-        glow.setBlurRadius(28)
-        glow.setOffset(0, 0)
-        brand.setGraphicsEffect(glow)
-        sub = QLabel("SLICER  //  NON-PLANAR CAM")
+        sub = QLabel("non-planar CAM")
         sub.setObjectName("brandSub")
         left_outer.addWidget(brand)
         left_outer.addWidget(sub)
@@ -441,6 +441,13 @@ class MainWindow(QMainWindow):
         self.trans_height_spin = self._dspin(2.0, 0.0, 100, 0.5)
         self.trans_height_spin.valueChanged.connect(self.update_viewport)
         f.addRow("Transition H:", self.trans_height_spin)
+        self.lbl_transition = QLabel("")
+        self.lbl_transition.setWordWrap(True)
+        f.addRow(self.lbl_transition)
+        self.btn_suggested = QPushButton("Use suggested transition")
+        self.btn_suggested.clicked.connect(self.use_suggested_transition)
+        self.btn_suggested.setVisible(False)
+        f.addRow(self.btn_suggested)
 
     def _build_profile_section(self):
         sec = self._section("4. Stage 2/4 Profile", expanded=False)
@@ -670,10 +677,52 @@ class MainWindow(QMainWindow):
         self.function_combo.blockSignals(False)
         if current in self.functions:
             self.function_combo.setCurrentText(current)
+        elif "Planar" in self.functions:
+            self.function_combo.setCurrentText("Planar")          # the default start
         self.on_function_changed(self.function_combo.currentText())
         errors = getattr(load_function_dir, "errors", {})
         if errors:
             self.lbl_function.setText("Skipped: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
+
+    def transition_advice(self):
+        """Advice for the transition height of the current function over the placed part (None: not applicable)."""
+        spec, mesh = self.current_function(), self.mesh
+        if spec is None or mesh is None or len(mesh.vertices) == 0:
+            return None
+        b = mesh.bounds
+        try:
+            rng = field_range(spec, self.function_form.values(), (b[0, 0], b[1, 0], b[0, 1], b[1, 1]))
+        except (FunctionFileError, ValueError):
+            return None
+        if rng is None or (abs(rng[0]) < 1e-9 and abs(rng[1]) < 1e-9):
+            return None                                    # tilting or flat layers: the transition does not stretch anything
+        return advise(rng[0], rng[1], self.layer_height_spin.value(), self.nozzle_spin.value(), self.trans_height_spin.value())
+
+    def update_transition_advice(self, *_):
+        if not hasattr(self, "lbl_transition"):
+            return
+        adv = self.transition_advice()
+        self.btn_suggested.setVisible(False)
+        if adv is None:
+            self.lbl_transition.setText("")
+            return
+        lo, hi = adv.window
+        lines = [f"Function over the part: {adv.f_min:.2f} .. {adv.f_max:.2f} mm. "
+                 f"Printable layer spacing with this nozzle: {lo:.2f} .. {hi:.2f} mm."]
+        if adv.thickness_min is not None:
+            lines.append(f"Layer spacing at this transition: {max(adv.thickness_min, 0.0):.2f} .. {adv.thickness_max:.2f} mm.")
+        if adv.min_transition > 0:
+            lines.append(f"Suggested minimum transition: {adv.min_transition:.1f} mm.")
+        lines.extend(adv.messages)
+        self.lbl_transition.setText("\n".join(lines))
+        colour = gui_theme.OK if adv.ok else gui_theme.ERR
+        self.lbl_transition.setStyleSheet(f"color: {colour};")
+        self.btn_suggested.setVisible(adv.possible and adv.min_transition > self.trans_height_spin.value() + 1e-9)
+
+    def use_suggested_transition(self):
+        adv = self.transition_advice()
+        if adv is not None and adv.possible and adv.min_transition > 0:
+            self.trans_height_spin.setValue(float(np.ceil(adv.min_transition * 10.0) / 10.0))
 
     def current_function(self):
         return self.functions.get(self.function_combo.currentText())
@@ -1019,7 +1068,12 @@ class MainWindow(QMainWindow):
             dt = time.time() - t0
             pts = len(self.stage2_traj.waypoints)
             self._setup_view_controls()
-            self.lbl_metrics.setText(f"Done in {dt:.2f}s | Layers: {self._layer_total()} | Pts: {pts}")
+            note = ""
+            adv = self.transition_advice()
+            if adv is not None and not adv.ok:
+                note = "\nWarning: " + ("; ".join(adv.messages) if adv.messages else
+                                         f"transition height is below the suggested minimum {adv.min_transition:.1f} mm")
+            self.lbl_metrics.setText(f"Done in {dt:.2f}s | Layers: {self._layer_total()} | Pts: {pts}{note}")
             self.update_viewport()
 
         except Exception as e:
@@ -1056,8 +1110,8 @@ class MainWindow(QMainWindow):
 
         if self.mesh is not None:
             self.gl_stage0.addItem(gl.GLMeshItem(vertexes=self.mesh.vertices, faces=self.mesh.faces,
-                                                 color=(0.05, 0.25, 0.35, 0.55), smooth=True, drawEdges=True,
-                                                 edgeColor=(0.0, 0.9, 1.0, 0.45)))
+                                                 color=(0.36, 0.34, 0.40, 0.55), smooth=True, drawEdges=True,
+                                                 edgeColor=(1.0, 0.69, 0.13, 0.40)))
             if self.chk_field_preview.isChecked():
                 try:
                     item = self._field_preview_item()

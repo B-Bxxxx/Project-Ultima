@@ -67,16 +67,16 @@ def test_resolve_values_applies_defaults_and_rejects_unknown_names():
 # ------------------------------------------------------------------ function files
 def test_shipped_function_templates_load_and_planar_plus_tilt_are_the_defaults():
     specs = load_function_dir(FUNCS)
-    assert set(specs) == {"Planar", "Progressive tilt"} and not load_function_dir.errors
+    assert set(specs) == {"Planar", "Progressive tilt", "Wave", "Conical", "Rounded ridge", "Ripple", "Dome (button)"} and not load_function_dir.errors
     tilt = specs["Progressive tilt"]
     assert set(tilt.parameters) == {"start_tilt_deg", "end_tilt_deg"} and tilt.kind == "tilt"
     p = tilt.to_slicer_params({"end_tilt_deg": 12})
     assert p["strategy"] == "progressive_tilt" and p["expression_params"]["end_tilt_deg"] == 12.0
     assert "t" in p["tilt_expression"]                       # the maths is in the file
     assert specs["Planar"].expression == "0"
-    example = load_function_file(os.path.join(FUNCS, "examples", "wave.json"))
+    example = load_function_file(os.path.join(FUNCS, "wave.json"))
     assert example.kind == "expression"
-    assert load_function_file(os.path.join(FUNCS, "examples", "conical.json")).kind == "expression"
+    assert load_function_file(os.path.join(FUNCS, "conical.json")).kind == "expression"
 
 
 def test_expression_function_uses_its_named_parameters_in_the_slicer():
@@ -161,7 +161,7 @@ def test_tilt_file_slices_like_the_linear_strategy_and_planar_file_like_planar()
 def test_conical_file_matches_the_conical_strategy():
     mesh = trimesh.creation.cylinder(radius=10, height=6, sections=64)
     mesh.apply_translation((0, 0, 3))
-    spec = load_function_file(os.path.join(FUNCS, "examples", "conical.json"))
+    spec = load_function_file(os.path.join(FUNCS, "conical.json"))
     a = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, "transition_height": 12.0, **spec.to_slicer_params()})
     b = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, "transition_height": 12.0, "strategy": "conical",
                                                   "cone_angle_deg": 15.0})
@@ -180,7 +180,7 @@ def test_values_outside_the_declared_range_are_an_error():
 
 
 def test_function_file_round_trip_and_saving_new_defaults(tmp_path):
-    spec = load_function_file(os.path.join(FUNCS, "examples", "wave.json"))
+    spec = load_function_file(os.path.join(FUNCS, "wave.json"))
     out = tmp_path / "mine.json"
     save_function_file(spec, str(out), {"a": 1.5, "b": 7.0})
     again = load_function_file(str(out))

@@ -1,0 +1,27 @@
+{
+  "format": "cam-function",
+  "version": 2,
+  "name": "Ripple",
+  "description": "Concentric waves around x = y = 0: z = z0 - a*sin(r/b). Wavelength = 2*pi*b.",
+  "expression": "a * np.sin(r / b)",
+  "parameters": {
+    "a": {
+      "label": "Amplitude",
+      "unit": "mm",
+      "default": 0.4,
+      "min": 0.0,
+      "max": 3.0,
+      "step": 0.1,
+      "description": "Height of the waves"
+    },
+    "b": {
+      "label": "Wavelength factor",
+      "unit": "mm",
+      "default": 3.0,
+      "min": 0.5,
+      "max": 30.0,
+      "step": 0.5,
+      "description": "Radial wavelength / (2*pi)"
+    }
+  }
+}

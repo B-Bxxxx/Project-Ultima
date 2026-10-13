@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
 
+from src import gui_theme
 from src.common.param_spec import SpecError
 from src.stage1_slicer.function_file import FORMAT as FUNCTION_FORMAT, VERSION as FUNCTION_VERSION, FunctionSpec, save_function_file
 from src.stage3_kinematics.machine_file import FORMAT as MACHINE_FORMAT, VERSION as MACHINE_VERSION, MachineSpec, save_machine_file
@@ -87,14 +88,14 @@ class _JsonEditor(QDialog):
             return
         self.spec = spec
         self.status.setText("OK - the file is valid.")
-        self.status.setStyleSheet("color: #39ff14;")
+        self.status.setStyleSheet(f"color: {gui_theme.OK};")
         self.btn_apply.setEnabled(True)
         self.btn_save.setEnabled(True)
 
     def _fail(self, msg: str):
         self.spec = None
         self.status.setText("Error: " + msg)
-        self.status.setStyleSheet("color: #ff3860;")
+        self.status.setStyleSheet(f"color: {gui_theme.ERR};")
         self.btn_apply.setEnabled(False)
         self.btn_save.setEnabled(False)
 
