@@ -1,19 +1,28 @@
 """
-Function files: the mathematical description of a slicing deformation as an editable JSON file.
+Function files: the mathematical description of how the layers are formed, as an editable JSON file.
+The file CONTAINS the maths - there is no hidden "type" that selects code.
 
     {
-      "format": "cam-function", "version": 1,
-      "name": "Progressive tilt", "description": "...",
-      "type": "progressive_tilt",            # planar | progressive_tilt | conical | expression | grid
-      "expression": "a * np.sin(x / b)",     # type "expression" only: f(x, y)
-      "data_file": "field.csv",              # type "grid" only (path relative to this file)
+      "format": "cam-function", "version": 2,
+      "name": "Wave", "description": "...",
+      "expression": "a * np.sin(x / b)",     # layers follow z = z0 - f(x, y)   (x, y, r + parameters)
       "parameters": { "a": {"label": "Amplitude", "unit": "mm", "default": 0.5, "min": 0, "max": 5} }
     }
 
-Nothing is predefined: every parameter a function needs must be declared in "parameters" (the GUI
-shows one named input field per declared parameter) and a missing one is an error. Expressions use
-the declared names like variables (validated by the AST whitelist in safe_expr.py).
-Coordinates: x, y are those of the part as placed on the bed; layers follow z = z0 - f(x, y).
+Exactly ONE of these defines the layer surfaces:
+  * "expression"  : f(x, y) in mm, layers follow z = z0 - f(x, y). Flat layers: "0".
+                    Cone: "r * tan(radians(cone_angle_deg))".
+  * "data_file"   : f(x, y) from a regular grid (csv/txt/npy), path relative to this file.
+  * "tilt_x_deg"  : every layer is a PLANE tilted about the X axis by this angle (degrees); the
+                    expression may use "t" = layer index / (layers - 1), 0..1, e.g.
+                    "start_tilt_deg + (end_tilt_deg - start_tilt_deg) * t".  The pivot line is
+                    "pivot_y" (default "y_min" = lowest Y of the part; "y_min" is the only name
+                    the program supplies besides "t").
+
+Nothing is predefined: every parameter a function uses must be declared in "parameters" (the GUI
+shows one named input field per declared parameter) and a missing one is an error. Expressions are
+validated by the AST whitelist in safe_expr.py.
+Coordinates: x, y are those of the part as placed on the bed.
 """
 import json
 import os
@@ -25,15 +34,10 @@ from src.stage1_slicer.function_import import load_data_file
 from src.stage1_slicer.safe_expr import compile_expression, expression_names
 
 FORMAT = "cam-function"
-VERSION = 1
-
-# type -> (strategy name, parameters the type NEEDS, optional parameters it understands)
-BUILTIN_TYPES = {
-    "planar": ("planar", (), ()),
-    "progressive_tilt": ("progressive_tilt", ("start_tilt_deg", "end_tilt_deg"), ("pivot_y",)),
-    "conical": ("conical", ("cone_angle_deg",), ()),
-}
-TYPES = tuple(BUILTIN_TYPES) + ("expression", "grid")
+VERSION = 2
+TILT_VAR = "t"           # layer position 0..1 inside "tilt_x_deg"
+PIVOT_VAR = "y_min"      # lowest Y of the part inside "pivot_y"
+DEFAULT_PIVOT = PIVOT_VAR
 
 
 class FunctionFileError(SpecError):
@@ -43,13 +47,18 @@ class FunctionFileError(SpecError):
 @dataclass
 class FunctionSpec:
     name: str
-    type: str
     description: str = ""
-    expression: Optional[str] = None
-    data_file: Optional[str] = None
+    expression: Optional[str] = None        # f(x, y), layers follow z = z0 - f
+    data_file: Optional[str] = None         # f(x, y) from a grid file
+    tilt_x_deg: Optional[str] = None        # planar layers tilted about X, expression of t
+    pivot_y: Optional[str] = None           # pivot line of the tilt (default "y_min")
     parameters: Dict[str, ParamSpec] = field(default_factory=dict)
     base_dir: str = ""                      # where a relative data_file is looked up
     source: str = ""                        # path the spec was loaded from
+
+    @property
+    def kind(self) -> str:
+        return "tilt" if self.tilt_x_deg is not None else ("grid" if self.data_file is not None else "expression")
 
     # ----------------------------------------------------------------------------- build / check
     @classmethod
@@ -70,63 +79,66 @@ class FunctionSpec:
             raise FunctionFileError(f'{where}"format" must be "{FORMAT}"')
         if d.get("version") != VERSION:
             raise FunctionFileError(f'{where}unsupported "version" {d.get("version")!r} (expected {VERSION})')
-        known = {"format", "version", "name", "description", "type", "expression", "data_file", "parameters"}
+        if "type" in d:
+            raise FunctionFileError(f'{where}"type" does not exist in version {VERSION}: write the maths '
+                                    f'("expression", "data_file" or "tilt_x_deg") into the file')
+        known = {"format", "version", "name", "description", "expression", "data_file", "tilt_x_deg", "pivot_y",
+                 "parameters"}
         extra = set(d) - known
         if extra:
             raise FunctionFileError(f"{where}unknown field(s) {sorted(extra)}")
         name = d.get("name")
         if not isinstance(name, str) or not name.strip():
             raise FunctionFileError(f'{where}"name" is missing')
-        typ = d.get("type")
-        if typ not in TYPES:
-            raise FunctionFileError(f'{where}"type" must be one of {list(TYPES)}, got {typ!r}')
-        spec = cls(name=name.strip(), type=typ, description=str(d.get("description", "")),
+        spec = cls(name=name.strip(), description=str(d.get("description", "")),
                    expression=d.get("expression"), data_file=d.get("data_file"),
+                   tilt_x_deg=d.get("tilt_x_deg"), pivot_y=d.get("pivot_y"),
                    parameters=parse_parameters(d.get("parameters"), where), base_dir=base_dir, source=source)
         spec._check(where)
         return spec
 
-    def _check(self, where: str) -> None:
+    def _check_expr(self, label: str, expr: Any, allowed_extra, where: str, scalar: bool = False) -> None:
+        if not isinstance(expr, str) or not expr.strip():
+            raise FunctionFileError(f'{where}"{label}" must be a non-empty expression')
         declared = set(self.parameters)
-        if self.type in BUILTIN_TYPES:
-            _, needed, optional = BUILTIN_TYPES[self.type]
-            for n in needed:
-                if n not in declared:
-                    raise FunctionFileError(f"{where}type '{self.type}' needs the parameter '{n}' - it is not declared in \"parameters\"")
-            unknown = declared - set(needed) - set(optional)
-            if unknown:
-                raise FunctionFileError(f"{where}type '{self.type}' does not use parameter(s) {sorted(unknown)}")
-            if self.expression is not None or self.data_file is not None:
-                raise FunctionFileError(f"{where}type '{self.type}' takes no \"expression\" / \"data_file\"")
-            for n in needed + optional:
-                if n in declared and self.parameters[n].type not in ("number", "int"):
-                    raise FunctionFileError(f"{where}parameter '{n}' must be numeric")
-        elif self.type == "expression":
-            if not isinstance(self.expression, str) or not self.expression.strip():
-                raise FunctionFileError(f'{where}type "expression" needs an "expression"')
-            if self.data_file is not None:
-                raise FunctionFileError(f'{where}type "expression" takes no "data_file"')
-            for n, p in self.parameters.items():
-                if p.type not in ("number", "int"):
-                    raise FunctionFileError(f"{where}parameter '{n}' of an expression must be numeric")
-            try:
-                used = expression_names(self.expression)
-                missing = used - declared
-                if missing:
-                    raise FunctionFileError(
-                        f"{where}the expression uses {sorted(missing)} but they are not declared in \"parameters\"")
-                compile_expression(self.expression, declared)
-            except FunctionFileError:
-                raise
-            except (ValueError, SyntaxError) as e:
-                raise FunctionFileError(f"{where}{e}") from e
-        else:  # grid
+        try:
+            if scalar:
+                import ast
+                bad = {n.id for n in ast.walk(ast.parse(expr.strip(), mode="eval")) if isinstance(n, ast.Name)} & {"x", "y", "r"}
+                if bad:
+                    raise FunctionFileError(f'{where}"{label}" is one number per layer: x, y, r are not available')
+            missing = expression_names(expr) - declared - set(allowed_extra)
+            if missing:
+                raise FunctionFileError(
+                    f"{where}\"{label}\" uses {sorted(missing)} but they are not declared in \"parameters\"")
+            compile_expression(expr, declared | set(allowed_extra))
+        except FunctionFileError:
+            raise
+        except (ValueError, SyntaxError) as e:
+            raise FunctionFileError(f"{where}\"{label}\": {e}") from e
+
+    def _check(self, where: str) -> None:
+        given = [k for k in ("expression", "data_file", "tilt_x_deg") if getattr(self, k) is not None]
+        if len(given) != 1:
+            raise FunctionFileError(
+                f'{where}exactly one of "expression", "data_file", "tilt_x_deg" is needed (found {given or "none"})')
+        for n, p in self.parameters.items():
+            if n in (TILT_VAR, PIVOT_VAR):
+                raise FunctionFileError(f"{where}parameter name '{n}' is reserved")
+            if self.kind != "grid" and p.type not in ("number", "int"):
+                raise FunctionFileError(f"{where}parameter '{n}' must be numeric")
+        if self.pivot_y is not None and self.kind != "tilt":
+            raise FunctionFileError(f'{where}"pivot_y" belongs to "tilt_x_deg"')
+        if self.kind == "expression":
+            self._check_expr("expression", self.expression, (), where)
+        elif self.kind == "tilt":
+            self._check_expr("tilt_x_deg", self.tilt_x_deg, (TILT_VAR,), where, scalar=True)
+            self._check_expr("pivot_y", self.pivot_y if self.pivot_y is not None else DEFAULT_PIVOT, (PIVOT_VAR,), where, scalar=True)
+        else:
             if not isinstance(self.data_file, str) or not self.data_file.strip():
-                raise FunctionFileError(f'{where}type "grid" needs a "data_file"')
-            if self.expression is not None:
-                raise FunctionFileError(f'{where}type "grid" takes no "expression"')
+                raise FunctionFileError(f'{where}"data_file" must be a file name')
             if self.parameters:
-                raise FunctionFileError(f'{where}type "grid" has no parameters')
+                raise FunctionFileError(f'{where}a "data_file" function has no parameters')
 
     # ----------------------------------------------------------------------------------- use
     def defaults(self) -> Dict[str, Any]:
@@ -141,9 +153,12 @@ class FunctionSpec:
     def to_slicer_params(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Parameters for UniversalFieldSlicerPlugin.slice() (without layer_height etc.)."""
         v = self.values(overrides)
-        if self.type in BUILTIN_TYPES:
-            return {"strategy": BUILTIN_TYPES[self.type][0], **v}
-        if self.type == "expression":
+        if self.kind == "tilt":
+            out = {"strategy": "progressive_tilt", "tilt_expression": self.tilt_x_deg, "expression_params": v}
+            if self.pivot_y is not None:
+                out["pivot_expression"] = self.pivot_y
+            return out
+        if self.kind == "expression":
             return {"strategy": "custom_expr", "expression": self.expression, "expression_params": v}
         path = self.data_file if os.path.isabs(self.data_file) else os.path.join(self.base_dir or ".", self.data_file)
         try:
@@ -162,11 +177,9 @@ class FunctionSpec:
         d: Dict[str, Any] = {"format": FORMAT, "version": VERSION, "name": self.name}
         if self.description:
             d["description"] = self.description
-        d["type"] = self.type
-        if self.expression is not None:
-            d["expression"] = self.expression
-        if self.data_file is not None:
-            d["data_file"] = self.data_file
+        for k in ("expression", "data_file", "tilt_x_deg", "pivot_y"):
+            if getattr(self, k) is not None:
+                d[k] = getattr(self, k)
         d["parameters"] = params
         return d
 

@@ -79,7 +79,7 @@ def test_shipped_functions_and_machines_are_listed(win):
 
 def test_function_parameters_become_named_fields_and_drive_the_slice(win, tmp_path):
     import json
-    spec = {"format": "cam-function", "version": 1, "name": "Slope", "type": "expression", "expression": "a * x",
+    spec = {"format": "cam-function", "version": 2, "name": "Slope", "expression": "a * x",
             "parameters": {"a": {"label": "Slope", "unit": "mm/mm", "default": 0.05, "min": 0, "max": 1, "step": 0.01}}}
     p = tmp_path / "slope.json"
     p.write_text(json.dumps(spec))
@@ -102,7 +102,7 @@ def test_function_parameters_become_named_fields_and_drive_the_slice(win, tmp_pa
 
 def test_invalid_function_and_machine_files_report_errors(win, tmp_path):
     bad = tmp_path / "bad.json"
-    bad.write_text('{"format": "cam-function", "version": 1, "name": "B", "type": "expression", "expression": "a*x"}')
+    bad.write_text('{"format": "cam-function", "version": 2, "name": "B", "expression": "a*x"}')
     assert not win.load_function_path(str(bad))
     assert win.lbl_function.text().startswith("Error") and "'a'" in win.lbl_function.text()
     assert not win.load_machine_path(str(bad))
@@ -112,7 +112,7 @@ def test_invalid_function_and_machine_files_report_errors(win, tmp_path):
 def test_grid_function_from_a_data_file(win, tmp_path):
     import json
     (tmp_path / "f.csv").write_text("x,y,f\n" + "\n".join(f"{x},{y},{0.05 * x}" for x in range(-20, 21, 5) for y in range(-20, 21, 5)))
-    (tmp_path / "g.json").write_text(json.dumps({"format": "cam-function", "version": 1, "name": "Grid", "type": "grid",
+    (tmp_path / "g.json").write_text(json.dumps({"format": "cam-function", "version": 2, "name": "Grid",
                                                  "data_file": "f.csv", "parameters": {}}))
     assert win.load_function_path(str(tmp_path / "g.json"))
     win.chk_field_preview.setChecked(True)

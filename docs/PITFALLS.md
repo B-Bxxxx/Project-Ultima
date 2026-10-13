@@ -52,7 +52,8 @@ Problems and traps met while building the pipeline - raw material for the docume
 | 28 | A far-away part (offset 120 / 80) left the camera behind. | fixed | The camera and the floor grid follow the part in X/Y; Z is never faked. |
 | 29 | `trimesh` boolean (hollow cube) needs an external engine that is not always installed. | removed | The hollow cube was dropped; the hollow cylinder needs no engine. |
 | 30 | GL rendering cannot be verified in the headless test environment. | open | Offscreen smoke tests only check the logic and that nothing raises. |
-| 31 | The editor preview shows the last-layer shift only, not the deformed solid; the machine preview is a 2-D side view. | open | Good enough to catch sign/range mistakes; a 3-D preview can follow with the 5-axis work. |
+| 31 | Function files used a `type` label while the real maths (tilt, cone) lived in Python - the file did not describe the function. | fixed | Version 2: the maths (expression / tilt_x_deg + pivot_y) is in the JSON; the editor is just a validated JSON text field. |
+| 32 | `custom_expr` did not refine the mesh, so a coarse mesh (a cube) was deformed only at its corners. | fixed | Same refinement as the conical strategy (`refine_mesh`, `refine_fraction`). |
 
 ## Process
 * A long single prompt overwhelms an assistant; split into small, verifiable tasks.

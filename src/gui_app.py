@@ -8,8 +8,9 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton, QLabel,
     QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog, QLineEdit, QStackedWidget, QScrollArea,
-    QToolButton, QFrame, QSizePolicy,
+    QToolButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
 )
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QComboBox as _QComboBox
 from PyQt6.QtWidgets import QDoubleSpinBox as _QDoubleSpinBox
 from PyQt6.QtWidgets import QSlider as _QSlider
@@ -24,6 +25,7 @@ from src.common.view_model import (Playback, effective_layers, head_item, layer_
                                    status_text)
 from src.common.param_spec import ParamSpec
 from src.gui_editors import FunctionEditor, MachineEditor
+from src import gui_theme
 from src.stage1_slicer.function_file import (
     FunctionFileError, FunctionSpec, load_function_dir, load_function_file, save_function_file,
 )
@@ -140,7 +142,6 @@ class CollapsibleSection(QWidget):
         self.button.setChecked(expanded)
         self.button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self.button.setStyleSheet("QToolButton { border: none; font-weight: bold; padding: 4px; text-align: left; }")
         self.button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.button.toggled.connect(self._toggle)
 
@@ -168,7 +169,8 @@ class CollapsibleSection(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Modular 5-Axis CAM Native GUI")
+        self.setWindowTitle(gui_theme.NAME)
+        self.setStyleSheet(gui_theme.STYLESHEET)
         self.setGeometry(100, 100, 1500, 900)
 
         self.source_mesh = None      # geometry as generated / loaded
@@ -202,6 +204,18 @@ class MainWindow(QMainWindow):
         left_outer = QVBoxLayout(left_panel)
         left_outer.setContentsMargins(0, 0, 0, 0)
 
+        brand = QLabel("ULTIMA")
+        brand.setObjectName("brand")
+        glow = QGraphicsDropShadowEffect(brand)
+        glow.setColor(QColor(gui_theme.CYAN))
+        glow.setBlurRadius(28)
+        glow.setOffset(0, 0)
+        brand.setGraphicsEffect(glow)
+        sub = QLabel("SLICER  //  NON-PLANAR CAM")
+        sub.setObjectName("brandSub")
+        left_outer.addWidget(brand)
+        left_outer.addWidget(sub)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -223,7 +237,7 @@ class MainWindow(QMainWindow):
 
         # pinned actions
         self.btn_run = QPushButton("Run CAM Pipeline")
-        self.btn_run.setStyleSheet("background-color: #2e8b57; color: white; padding: 10px; font-weight: bold;")
+        self.btn_run.setObjectName("runButton")
         self.btn_run.clicked.connect(self.run_pipeline)
         left_outer.addWidget(self.btn_run)
         self.btn_export = QPushButton("Export G-Code (.gcode)")
@@ -243,6 +257,7 @@ class MainWindow(QMainWindow):
         def gl_tab(title):
             w = gl.GLViewWidget()
             w.opts['distance'] = 80
+            w.setBackgroundColor(gui_theme.GL_BACKGROUND)
             self.tabs.addTab(w, title)
             return w
 
@@ -393,7 +408,7 @@ class MainWindow(QMainWindow):
         f.addRow(self.chk_field_preview)
         note = QLabel("x, y = coordinates of the PLACED part on the bed; layers follow z = z0 - f(x, y).")
         note.setWordWrap(True)
-        note.setStyleSheet("color: gray;")
+        note.setStyleSheet(f"color: {gui_theme.MUTED};")
         f.addRow(note)
         self.functions = {}
         self.function_combo.currentTextChanged.connect(self.on_function_changed)
@@ -496,7 +511,7 @@ class MainWindow(QMainWindow):
             chk.stateChanged.connect(self._refresh_paths)
             desc = QLabel(st.description)
             desc.setWordWrap(True)
-            desc.setStyleSheet("color: gray; margin-left: 22px;")
+            desc.setStyleSheet(f"color: {gui_theme.MUTED}; margin-left: 22px;")
             f.addRow(chk)
             f.addRow(desc)
             self.feature_checks[st.key] = chk
@@ -694,14 +709,8 @@ class MainWindow(QMainWindow):
             except (FunctionFileError, OSError) as e:
                 self.lbl_function.setText(f"Error: {e}")
 
-    def _part_bounds(self):
-        if self.mesh is not None and len(self.mesh.vertices):
-            b = self.mesh.bounds
-            return (float(b[0, 0]), float(b[1, 0]), float(b[0, 1]), float(b[1, 1]))
-        return (-20.0, 20.0, -20.0, 20.0)
-
     def open_function_editor(self, new: bool = False):
-        ed = FunctionEditor(self, bounds=self._part_bounds())
+        ed = FunctionEditor(self)
         ed.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         spec = None if new else self.current_function()
         if spec is not None:
@@ -802,11 +811,11 @@ class MainWindow(QMainWindow):
     def _active_field(self):
         """The field object of the current function (for the preview), or None (planar / tilt)."""
         spec = self.current_function()
-        if spec is None or spec.type not in ("expression", "grid"):
+        if spec is None or spec.kind == "tilt":
             return None
         try:
             params = spec.to_slicer_params(self.function_form.values())
-            if spec.type == "expression":
+            if spec.kind == "expression":
                 return ExpressionField(spec.expression, params["expression_params"])
             return GridField.from_params(params)
         except (FunctionFileError, ValueError) as e:
@@ -1023,13 +1032,14 @@ class MainWindow(QMainWindow):
             w.clear()
             g = gl.GLGridItem()
             g.scale(5, 5, 1)
+            g.setColor(gui_theme.GL_GRID)
             g.translate(self._grid_origin[0], self._grid_origin[1], 0.0)
             w.addItem(g)
 
         if self.mesh is not None:
             self.gl_stage0.addItem(gl.GLMeshItem(vertexes=self.mesh.vertices, faces=self.mesh.faces,
-                                                 color=(0.4, 0.4, 0.4, 0.6), smooth=True, drawEdges=True,
-                                                 edgeColor=(1.0, 1.0, 1.0, 0.5)))
+                                                 color=(0.05, 0.25, 0.35, 0.55), smooth=True, drawEdges=True,
+                                                 edgeColor=(0.0, 0.9, 1.0, 0.45)))
             if self.chk_field_preview.isChecked():
                 try:
                     item = self._field_preview_item()

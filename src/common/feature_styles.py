@@ -24,12 +24,12 @@ class FeatureStyle:
 
 
 FEATURE_STYLES: Tuple[FeatureStyle, ...] = (
-    FeatureStyle("outer_wall", "Outer wall", "Outermost perimeter (visible surface)", (0.0, 0.8, 0.0, 1.0)),
-    FeatureStyle("inner_wall", "Inner wall", "Inner perimeters", (0.8, 0.8, 0.0, 1.0)),
-    FeatureStyle("bottom_solid", "Bottom skin", "Solid layers at the bottom (and under overhangs)", (0.9, 0.4, 0.0, 1.0)),
-    FeatureStyle("top_solid", "Top skin", "Solid layers at the top (and over cavities)", (0.8, 0.0, 0.8, 1.0)),
-    FeatureStyle("infill", "Sparse infill", "Internal sparse infill", (0.0, 0.5, 0.8, 1.0)),
-    FeatureStyle("travel", "Travel", "Non-extruding moves", (0.8, 0.0, 0.0, 0.5)),
+    FeatureStyle("outer_wall", "Outer wall", "Outermost perimeter (visible surface)", (0.22, 1.0, 0.08, 1.0)),
+    FeatureStyle("inner_wall", "Inner wall", "Inner perimeters", (1.0, 0.9, 0.0, 1.0)),
+    FeatureStyle("bottom_solid", "Bottom skin", "Solid layers at the bottom (and under overhangs)", (1.0, 0.48, 0.0, 1.0)),
+    FeatureStyle("top_solid", "Top skin", "Solid layers at the top (and over cavities)", (1.0, 0.17, 0.84, 1.0)),
+    FeatureStyle("infill", "Sparse infill", "Internal sparse infill", (0.0, 0.81, 1.0, 1.0)),
+    FeatureStyle("travel", "Travel", "Non-extruding moves", (1.0, 0.22, 0.38, 0.45)),
 )
 
 STYLE_BY_KEY: Dict[str, FeatureStyle] = {s.key: s for s in FEATURE_STYLES}

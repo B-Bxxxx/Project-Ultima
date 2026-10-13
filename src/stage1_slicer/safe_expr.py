@@ -34,12 +34,12 @@ ALLOWED_NAMES = ("x", "y", "r", "pi", "e")
 NP_FUNCS = frozenset({
     "sin", "cos", "tan", "arcsin", "arccos", "arctan", "arctan2",
     "sinh", "cosh", "tanh", "exp", "log", "log10", "sqrt", "abs", "absolute",
-    "floor", "ceil", "sign", "minimum", "maximum", "hypot", "clip",
+    "floor", "ceil", "sign", "minimum", "maximum", "hypot", "clip", "radians", "degrees",
 })
 MATH_FUNCS = frozenset({
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
     "sinh", "cosh", "tanh", "exp", "log", "log10", "sqrt", "fabs",
-    "floor", "ceil", "hypot",
+    "floor", "ceil", "hypot", "radians", "degrees",
 })
 MODULE_CONSTANTS = frozenset({"pi", "e"})
 BARE_FUNCS = NP_FUNCS  # sin(x) is resolved to the numpy function

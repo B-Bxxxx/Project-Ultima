@@ -202,23 +202,39 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
 
-        # Determine pivot center (to prevent negative Z folding)
-        # Default to pivoting around the inner Y edge (min y)
-        if len(self.mesh.vertices) > 0:
-            self.pivot_y = params.get("pivot_y", self.mesh.bounds[0, 1])
+        # Tilt given as an expression of the layer position t = 0..1 (function files, "tilt_x_deg").
+        # Without it the linear start_tilt_deg -> end_tilt_deg interpolation is used.
+        self.tilt_expr = params.get("tilt_expression")
+        self.expr_params = {k: float(v) for k, v in dict(params.get("expression_params", {})).items()}
+        self._tilt_code = None
+        y_min = float(self.mesh.bounds[0, 1]) if len(self.mesh.vertices) > 0 else 0.0
+        if self.tilt_expr is not None:
+            missing = expression_names(self.tilt_expr) - set(self.expr_params) - {"t"}
+            if missing:
+                raise ValueError(f"Tilt expression uses undefined parameter(s) {sorted(missing)}")
+            self._tilt_code = compile_expression(self.tilt_expr, set(self.expr_params) | {"t"})
+
+        # Pivot line (prevents negative Z folding): numeric `pivot_y`, or an expression of y_min,
+        # default the lowest Y edge of the part.
+        if params.get("pivot_y") is not None:
+            self.pivot_y = float(params["pivot_y"])
         else:
-            self.pivot_y = params.get("pivot_y", 0.0)
+            pexpr = params.get("pivot_expression", "y_min")
+            pcode = compile_expression(pexpr, set(self.expr_params) | {"y_min"})
+            self.pivot_y = float(evaluate_compiled(pcode, 0.0, 0.0, 0.0, {**self.expr_params, "y_min": y_min}))
 
     def get_layer_count(self) -> int:
         return self.num_layers
 
     def get_resolved_params(self) -> Dict[str, Any]:
         resolved = super().get_resolved_params()
-        resolved.update({
-            "start_tilt_deg": float(np.degrees(self.start_tilt)),
-            "end_tilt_deg": float(np.degrees(self.end_tilt)),
-            "pivot_y": float(self.pivot_y),
-        })
+        resolved["pivot_y"] = float(self.pivot_y)
+        if self._tilt_code is not None:
+            resolved["tilt_expression"] = self.tilt_expr
+            resolved["expression_params"] = dict(self.expr_params)
+        else:
+            resolved["start_tilt_deg"] = float(np.degrees(self.start_tilt))
+            resolved["end_tilt_deg"] = float(np.degrees(self.end_tilt))
         return resolved
 
     def project_to_layer(self, x: float, y: float, layer_idx: int) -> Tuple[float, float, float]:
@@ -234,6 +250,9 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
 
     def _get_tilt_for_layer(self, layer_idx: int) -> float:
         t = layer_idx / max(1, (self.num_layers - 1))
+        if self._tilt_code is not None:
+            deg = float(evaluate_compiled(self._tilt_code, 0.0, 0.0, 0.0, {**self.expr_params, "t": t}))
+            return float(np.radians(deg))
         return self.start_tilt + t * (self.end_tilt - self.start_tilt)
 
     def get_slice_plane(self, layer_idx: int):
@@ -400,8 +419,12 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         self.layer_height = params.get("layer_height", 0.2)
         self._setup_field(params)
 
-        # Precompute deformed mesh
-        self.deformed = self.mesh.copy()
+        # Precompute deformed mesh (refined first, a coarse mesh would deform only at its corners)
+        if params.get("refine_mesh", True) and len(self.mesh.vertices) > 0:
+            wavelength = params.get("feature_scale", self.mesh.extents.max() if self.mesh.extents is not None else 10.0)
+            self._refine_mesh(max_edge=wavelength * params.get("refine_fraction", 1.0 / 8.0))
+        else:
+            self.deformed = self.mesh.copy()
         self.start_z = self._first_layer_z(params, self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
             x = self.deformed.vertices[:, 0]

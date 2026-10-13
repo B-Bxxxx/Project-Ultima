@@ -27,7 +27,7 @@ MACHINES = os.path.join(ROOT, "config", "machines")
 
 
 def _fn(**kw):
-    d = {"format": "cam-function", "version": 1, "name": "T", "type": "expression",
+    d = {"format": "cam-function", "version": 2, "name": "T",
          "expression": "a * x", "parameters": {"a": {"default": 0.1}}}
     d.update(kw)
     return d
@@ -69,10 +69,14 @@ def test_shipped_function_templates_load_and_planar_plus_tilt_are_the_defaults()
     specs = load_function_dir(FUNCS)
     assert set(specs) == {"Planar", "Progressive tilt"} and not load_function_dir.errors
     tilt = specs["Progressive tilt"]
-    assert set(tilt.parameters) == {"start_tilt_deg", "end_tilt_deg"}
-    assert tilt.to_slicer_params({"end_tilt_deg": 12})["end_tilt_deg"] == 12.0
+    assert set(tilt.parameters) == {"start_tilt_deg", "end_tilt_deg"} and tilt.kind == "tilt"
+    p = tilt.to_slicer_params({"end_tilt_deg": 12})
+    assert p["strategy"] == "progressive_tilt" and p["expression_params"]["end_tilt_deg"] == 12.0
+    assert "t" in p["tilt_expression"]                       # the maths is in the file
+    assert specs["Planar"].expression == "0"
     example = load_function_file(os.path.join(FUNCS, "examples", "wave.json"))
-    assert example.type == "expression"
+    assert example.kind == "expression"
+    assert load_function_file(os.path.join(FUNCS, "examples", "conical.json")).kind == "expression"
 
 
 def test_expression_function_uses_its_named_parameters_in_the_slicer():
@@ -98,14 +102,15 @@ def test_expression_function_uses_its_named_parameters_in_the_slicer():
 
 @pytest.mark.parametrize("mutation,message", [
     (lambda d: d.update(format="nope"), "format"),
-    (lambda d: d.update(version=2), "version"),
+    (lambda d: d.update(version=1), "version"),
     (lambda d: d.pop("name"), "name"),
-    (lambda d: d.update(type="spiral"), "type"),
+    (lambda d: d.update(type="spiral"), "does not exist"),
     (lambda d: d.update(colour="red"), "unknown field"),
     (lambda d: d.update(expression="a * x + b"), "'b'"),                    # undeclared parameter used
     (lambda d: d.update(expression="__import__('os')"), "unknown name|not allowed|Unsafe"),
-    (lambda d: d.update(expression=None), "needs an \"expression\""),
-    (lambda d: d.update(data_file="x.csv"), "takes no"),
+    (lambda d: d.update(expression=None), "exactly one"),
+    (lambda d: d.update(data_file="x.csv"), "exactly one"),
+    (lambda d: d.update(pivot_y="y_min"), "belongs to"),
     (lambda d: d["parameters"].update(x={"default": 1}), "reserved"),
     (lambda d: d["parameters"].update(a={"label": "A"}), "'default' is missing"),
 ])
@@ -116,20 +121,54 @@ def test_invalid_function_files_are_rejected_with_a_clear_message(mutation, mess
         FunctionSpec.from_dict(d)
 
 
-def test_builtin_types_need_their_parameters_and_reject_foreign_ones():
-    base = {"format": "cam-function", "version": 1, "name": "T", "type": "progressive_tilt"}
-    with pytest.raises(FunctionFileError, match="end_tilt_deg"):
-        FunctionSpec.from_dict({**base, "parameters": {"start_tilt_deg": {"default": 0}}})
-    with pytest.raises(FunctionFileError, match="does not use"):
-        FunctionSpec.from_dict({**base, "parameters": {"start_tilt_deg": {"default": 0}, "end_tilt_deg": {"default": 5},
-                                                       "zoom": {"default": 1}}})
-    ok = FunctionSpec.from_dict({**base, "parameters": {"start_tilt_deg": {"default": 0}, "end_tilt_deg": {"default": 5},
-                                                        "pivot_y": {"default": -10}}})
-    assert ok.to_slicer_params()["pivot_y"] == -10.0
-    with pytest.raises(FunctionFileError, match="not declared|needs"):
-        FunctionSpec.from_dict({**base, "type": "conical", "parameters": {}})
-    with pytest.raises(FunctionFileError):
-        FunctionSpec.from_dict({**base, "type": "planar", "parameters": {"a": {"default": 1}}})
+def test_tilt_function_declares_its_own_maths_and_names():
+    base = {"format": "cam-function", "version": 2, "name": "T",
+            "tilt_x_deg": "s + (en - s) * t", "parameters": {"s": {"default": 0}, "en": {"default": 5}}}
+    ok = FunctionSpec.from_dict(base)
+    assert ok.kind == "tilt" and ok.to_slicer_params({"en": 8})["expression_params"] == {"s": 0.0, "en": 8.0}
+    with pytest.raises(FunctionFileError, match="not declared"):
+        FunctionSpec.from_dict({**base, "tilt_x_deg": "s + zoom * t"})
+    with pytest.raises(FunctionFileError, match="reserved"):
+        FunctionSpec.from_dict({**base, "parameters": {"t": {"default": 1}}})
+    piv = FunctionSpec.from_dict({**base, "pivot_y": "y_min + off", "parameters": {**base["parameters"], "off": {"default": 2}}})
+    assert piv.to_slicer_params()["pivot_expression"] == "y_min + off"
+    with pytest.raises(FunctionFileError, match="one number per layer"):
+        FunctionSpec.from_dict({**base, "pivot_y": "x"})        # x is not available for the pivot
+    with pytest.raises(FunctionFileError, match="exactly one"):
+        FunctionSpec.from_dict({**base, "expression": "0"})
+
+
+def test_tilt_file_slices_like_the_linear_strategy_and_planar_file_like_planar():
+    mesh = trimesh.creation.box(extents=(20, 20, 6))
+    mesh.apply_translation((0, 0, 3))
+    spec = load_function_file(os.path.join(FUNCS, "progressive_tilt.json"))
+    file_model = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, **spec.to_slicer_params({"end_tilt_deg": 12.0})})
+    old_model = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, "strategy": "progressive_tilt",
+                                                          "start_tilt_deg": 0.0, "end_tilt_deg": 12.0})
+    assert len(file_model.layers) == len(old_model.layers)
+    for a, b in zip(file_model.layers, old_model.layers):
+        assert a.z_height == pytest.approx(b.z_height)
+        assert a.contours[0].normals[0] == pytest.approx(b.contours[0].normals[0])
+    json.dumps(file_model.metadata)
+    flat = load_function_file(os.path.join(FUNCS, "planar.json"))
+    fm = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, **flat.to_slicer_params()})
+    pm = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, "strategy": "planar"})
+    assert len(fm.layers) == len(pm.layers)
+    for a, b in zip(fm.layers, pm.layers):
+        assert a.z_height == pytest.approx(b.z_height)
+
+
+def test_conical_file_matches_the_conical_strategy():
+    mesh = trimesh.creation.cylinder(radius=10, height=6, sections=64)
+    mesh.apply_translation((0, 0, 3))
+    spec = load_function_file(os.path.join(FUNCS, "examples", "conical.json"))
+    a = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, "transition_height": 12.0, **spec.to_slicer_params()})
+    b = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 1.0, "transition_height": 12.0, "strategy": "conical",
+                                                  "cone_angle_deg": 15.0})
+    assert len(a.layers) == len(b.layers)
+    ra = max(np.hypot(*np.asarray(c.points)[:, :2].T).max() for c in a.layers[2].contours)
+    rb = max(np.hypot(*np.asarray(c.points)[:, :2].T).max() for c in b.layers[2].contours)
+    assert ra == pytest.approx(rb, rel=0.02)
 
 
 def test_values_outside_the_declared_range_are_an_error():
@@ -153,12 +192,12 @@ def test_function_file_round_trip_and_saving_new_defaults(tmp_path):
 
 def test_grid_function_reads_its_data_file_relative_to_the_function_file(tmp_path):
     (tmp_path / "f.csv").write_text("x,y,f\n" + "\n".join(f"{x},{y},{0.05 * x}" for x in range(-20, 21, 10) for y in range(-20, 21, 10)))
-    (tmp_path / "g.json").write_text(json.dumps({"format": "cam-function", "version": 1, "name": "G", "type": "grid",
+    (tmp_path / "g.json").write_text(json.dumps({"format": "cam-function", "version": 2, "name": "G",
                                                  "data_file": "f.csv", "parameters": {}}))
     spec = load_function_file(str(tmp_path / "g.json"))
     params = spec.to_slicer_params()
     assert params["strategy"] == "grid_field" and len(params["grid_x"]) == 5
-    (tmp_path / "bad.json").write_text(json.dumps({"format": "cam-function", "version": 1, "name": "B", "type": "grid",
+    (tmp_path / "bad.json").write_text(json.dumps({"format": "cam-function", "version": 2, "name": "B",
                                                    "data_file": "missing.csv"}))
     with pytest.raises(FunctionFileError, match="data file"):
         load_function_file(str(tmp_path / "bad.json")).to_slicer_params()

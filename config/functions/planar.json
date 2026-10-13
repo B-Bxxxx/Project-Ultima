@@ -1,8 +1,8 @@
 {
   "format": "cam-function",
-  "version": 1,
+  "version": 2,
   "name": "Planar",
-  "description": "Flat horizontal layers (standard slicing).",
-  "type": "planar",
+  "description": "Flat layers (3-axis slicing). The surface function is zero: z = z0 - 0.",
+  "expression": "0",
   "parameters": {}
 }
