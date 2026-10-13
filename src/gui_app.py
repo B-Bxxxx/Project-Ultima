@@ -23,6 +23,7 @@ from src.common.schemas import MinimalPrintProfile
 from src.common.view_model import (Playback, effective_layers, head_item, layer_count, move_range,
                                    status_text)
 from src.common.param_spec import ParamSpec
+from src.gui_editors import FunctionEditor, MachineEditor
 from src.stage1_slicer.function_file import (
     FunctionFileError, FunctionSpec, load_function_dir, load_function_file, save_function_file,
 )
@@ -374,9 +375,19 @@ class MainWindow(QMainWindow):
         b2.clicked.connect(self.save_function_to_file)
         b3 = QPushButton("Reload")
         b3.clicked.connect(self.reload_functions)
+        b4 = QPushButton("Edit...")
+        b4.clicked.connect(lambda: self.open_function_editor(False))
+        b5 = QPushButton("New...")
+        b5.clicked.connect(lambda: self.open_function_editor(True))
         for b in (b1, b2, b3):
             rl.addWidget(b)
         f.addRow(row)
+        row2 = QWidget()
+        r2 = QHBoxLayout(row2)
+        r2.setContentsMargins(0, 0, 0, 0)
+        r2.addWidget(b4)
+        r2.addWidget(b5)
+        f.addRow(row2)
         self.chk_field_preview = QCheckBox("Preview layer surface in Stage 0")
         self.chk_field_preview.stateChanged.connect(self.update_viewport)
         f.addRow(self.chk_field_preview)
@@ -454,9 +465,19 @@ class MainWindow(QMainWindow):
         b2.clicked.connect(self.save_machine_to_file)
         b3 = QPushButton("Reload")
         b3.clicked.connect(self.reload_machines)
+        b4 = QPushButton("Edit...")
+        b4.clicked.connect(lambda: self.open_machine_editor(False))
+        b5 = QPushButton("New...")
+        b5.clicked.connect(lambda: self.open_machine_editor(True))
         for b in (b1, b2, b3):
             rl.addWidget(b)
         f.addRow(row)
+        row2 = QWidget()
+        r2 = QHBoxLayout(row2)
+        r2.setContentsMargins(0, 0, 0, 0)
+        r2.addWidget(b4)
+        r2.addWidget(b5)
+        f.addRow(row2)
         self.machines = {}
         self.machine_combo.currentTextChanged.connect(self.on_machine_changed)
         self.reload_machines()
@@ -673,6 +694,56 @@ class MainWindow(QMainWindow):
             except (FunctionFileError, OSError) as e:
                 self.lbl_function.setText(f"Error: {e}")
 
+    def _part_bounds(self):
+        if self.mesh is not None and len(self.mesh.vertices):
+            b = self.mesh.bounds
+            return (float(b[0, 0]), float(b[1, 0]), float(b[0, 1]), float(b[1, 1]))
+        return (-20.0, 20.0, -20.0, 20.0)
+
+    def open_function_editor(self, new: bool = False):
+        ed = FunctionEditor(self, bounds=self._part_bounds())
+        ed.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        spec = None if new else self.current_function()
+        if spec is not None:
+            # edit the values currently shown as the new defaults
+            try:
+                d = spec.to_dict(self.function_form.values())
+            except FunctionFileError:
+                d = spec.to_dict()
+            ed.base_dir = spec.base_dir
+            ed.load_dict(d, spec.source)
+        else:
+            ed.open_spec(None)
+        ed.applied.connect(self.add_function)
+        self.function_editor = ed
+        ed.show()
+        return ed
+
+    def open_machine_editor(self, new: bool = False):
+        ed = MachineEditor(self)
+        ed.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        spec = None if new else self.current_machine()
+        if spec is not None:
+            try:
+                ed.load_dict(spec.to_dict(self.machine_form.values()), spec.source)
+            except MachineFileError:
+                ed.open_spec(spec)
+        else:
+            ed.open_spec(None)
+        ed.applied.connect(self.add_machine)
+        self.machine_editor = ed
+        ed.show()
+        return ed
+
+    def add_machine(self, spec: MachineSpec):
+        self.machines[spec.name] = spec
+        self.machine_combo.blockSignals(True)
+        if self.machine_combo.findText(spec.name) < 0:
+            self.machine_combo.addItem(spec.name)
+        self.machine_combo.blockSignals(False)
+        self.machine_combo.setCurrentText(spec.name)
+        self.on_machine_changed(spec.name)
+
     def reload_machines(self):
         keep = {n: sp for n, sp in getattr(self, "machines", {}).items()
                 if sp.source and os.path.dirname(os.path.abspath(sp.source)) != os.path.join(CONFIG_DIR, "machines")}
@@ -708,13 +779,7 @@ class MainWindow(QMainWindow):
         except MachineFileError as e:
             self.lbl_machine.setText(f"Error: {e}")
             return False
-        self.machines[spec.name] = spec
-        self.machine_combo.blockSignals(True)
-        if self.machine_combo.findText(spec.name) < 0:
-            self.machine_combo.addItem(spec.name)
-        self.machine_combo.blockSignals(False)
-        self.machine_combo.setCurrentText(spec.name)
-        self.on_machine_changed(spec.name)
+        self.add_machine(spec)
         return True
 
     def load_machine_from_file(self):
