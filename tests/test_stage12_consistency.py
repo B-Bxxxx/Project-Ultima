@@ -66,7 +66,7 @@ def test_stage1_and_stage2_strategies_agree_layer_by_layer(name):
         idx = layer.layer_index
         z_nominal = stage1.start_z + idx * stage1.layer_height
         assert stage2.get_blend_weight(z_nominal) == pytest.approx(stage1.get_blend_weight(z_nominal))
-        assert layer.z_height == pytest.approx(z_nominal) or name == "progressive_tilt"
+        assert layer.z_height == pytest.approx(z_nominal - 0.5 * stage1.layer_height) or name == "progressive_tilt"
         for p in probes:
             assert stage2.compute_normal(p, idx) == pytest.approx(stage1.compute_normal(p, idx), abs=1e-9)
             assert stage2.compute_thickness(p, idx) == pytest.approx(stage1.compute_thickness(p, idx), abs=1e-9)
@@ -143,7 +143,7 @@ def test_external_field_end_to_end_stage1_json_stage2(tmp_path):
     assert all(np.isfinite([w.x, w.y, w.z, w.i, w.j, w.k]).all() for w in traj.waypoints)
 
     # Geometry check: the layer surface is z' = c - f(x,y) = c - 0.05 x
-    nominal = {l.layer_index: l.z_height for l in model.layers}
+    nominal = {l.layer_index: l.z_height + 0.5 for l in model.layers}   # z_height is the mid-plane; layers print at the top (h = 1)
     checked = 0
     for w in traj.waypoints:
         if w.feature_type != "outer_wall" or w.is_travel_move:

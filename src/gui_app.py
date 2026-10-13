@@ -6,14 +6,18 @@ import trimesh
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton, QLabel,
-    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog, QSlider,
-    QLineEdit, QStackedWidget, QScrollArea, QToolButton, QFrame, QSizePolicy,
+    QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog, QLineEdit, QStackedWidget, QScrollArea,
+    QToolButton, QFrame, QSizePolicy,
 )
+from PyQt6.QtWidgets import QComboBox as _QComboBox
+from PyQt6.QtWidgets import QDoubleSpinBox as _QDoubleSpinBox
+from PyQt6.QtWidgets import QSlider as _QSlider
+from PyQt6.QtWidgets import QSpinBox as _QSpinBox
+from pyqtgraph import Vector
 import pyqtgraph.opengl as gl
 
 from src.common.feature_styles import FEATURE_STYLES, group_lines_by_feature
 from src.common.placement import place_mesh
-from src.common.primitives import hollow_box
 from src.common.schemas import MachineConfig, MinimalPrintProfile
 from src.common.view_model import (Playback, effective_layers, head_item, layer_count, move_range,
                                    status_text)
@@ -24,6 +28,30 @@ from src.stage1_slicer.registry import PluginRegistry
 from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 from src.stage3_kinematics.registry import KinematicsRegistry
 from src.stage4_postproc.klipper_postproc import Klipper5AxisPostProcessor
+
+
+# The settings column scrolls with the mouse wheel. Spin boxes, combo boxes and sliders must NOT
+# react to the wheel (a value changing while the user scrolls the menu is a nasty surprise): they
+# ignore the event, which then reaches the scroll area. Keyboard and mouse editing are unchanged.
+class _NoWheel:
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class QDoubleSpinBox(_NoWheel, _QDoubleSpinBox):
+    pass
+
+
+class QSpinBox(_NoWheel, _QSpinBox):
+    pass
+
+
+class QComboBox(_NoWheel, _QComboBox):
+    pass
+
+
+class QSlider(_NoWheel, _QSlider):
+    pass
 
 
 class CollapsibleSection(QWidget):
@@ -78,6 +106,7 @@ class MainWindow(QMainWindow):
         self.grid_field = None       # GridField loaded from a data file
         self.grid_name = ""
 
+        self._grid_origin = (0.0, 0.0)
         self.playback = Playback()
         self.timer = QTimer(self)
         self.timer.setInterval(40)
@@ -185,7 +214,7 @@ class MainWindow(QMainWindow):
         sec = self._section("1. Input Geometry")
         f = sec.form
         self.geom_combo = QComboBox()
-        self.geom_combo.addItems(["Cylinder", "Hollow Cylinder", "Cube", "Hollow Cube", "Upload STL..."])
+        self.geom_combo.addItems(["Cylinder", "Hollow Cylinder", "Cube", "Upload STL..."])
         self.geom_combo.currentIndexChanged.connect(self.on_geom_changed)
         f.addRow("Geometry:", self.geom_combo)
 
@@ -205,11 +234,9 @@ class MainWindow(QMainWindow):
         self.cube_w = self._dspin(30.0, 1, 500, 1)
         self.cube_d = self._dspin(30.0, 1, 500, 1)
         self.cube_h = self._dspin(20.0, 0.5, 500, 1)
-        self.cube_wall = self._dspin(5.0, 0.2, 500, 0.5)
         bl.addRow("Width:", self.cube_w)
         bl.addRow("Depth:", self.cube_d)
         bl.addRow("Height:", self.cube_h)
-        bl.addRow("Wall Thickness:", self.cube_wall)
         self.geom_stack.addWidget(self.cube_widget)
 
         self.stl_widget = QWidget()
@@ -231,6 +258,8 @@ class MainWindow(QMainWindow):
         self.rot_z = self._dspin(0, -360, 360, 5, 1)
         self.off_x = self._dspin(0, -1000, 1000, 1, 1)
         self.off_y = self._dspin(0, -1000, 1000, 1, 1)
+        self.off_z = self._dspin(0, -1000, 1000, 1, 1)
+        self.off_z_label = QLabel("Offset Z (mm):")
         self.chk_center = QCheckBox("Center on bed (XY)")
         self.chk_center.setChecked(True)
         self.chk_drop = QCheckBox("Drop to bed (Z = 0)")
@@ -240,6 +269,7 @@ class MainWindow(QMainWindow):
         f.addRow("Rotate Z (deg):", self.rot_z)
         f.addRow("Offset X (mm):", self.off_x)
         f.addRow("Offset Y (mm):", self.off_y)
+        f.addRow(self.off_z_label, self.off_z)
         f.addRow(self.chk_center)
         f.addRow(self.chk_drop)
         btn = QPushButton("Reset placement")
@@ -247,10 +277,11 @@ class MainWindow(QMainWindow):
         f.addRow(btn)
         self.lbl_mesh_info = QLabel("")
         f.addRow(self.lbl_mesh_info)
-        for w in (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y):
+        for w in (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y, self.off_z):
             w.valueChanged.connect(self.apply_placement)
         for c in (self.chk_center, self.chk_drop):
             c.stateChanged.connect(self.apply_placement)
+        self._update_z_offset_visibility()
 
     def _build_function_section(self):
         sec = self._section("2. Stage 0 Function (f(x, y))", expanded=False)
@@ -309,6 +340,12 @@ class MainWindow(QMainWindow):
         f.addRow("Travel command:", self.travel_cmd_combo)
         self.retract_spin = self._dspin(0.8, 0.0, 20.0, 0.1)
         f.addRow("Retract (mm):", self.retract_spin)
+        self.unretract_spin = self._dspin(0.8, 0.0, 20.0, 0.1)
+        f.addRow("Unretract / prime (mm):", self.unretract_spin)
+        self.retract_speed_spin = self._dspin(2400, 60, 30000, 100, 0)
+        f.addRow("Retract speed (mm/min):", self.retract_speed_spin)
+        self.unretract_speed_spin = self._dspin(2400, 60, 30000, 100, 0)
+        f.addRow("Unretract speed (mm/min):", self.unretract_speed_spin)
         self.zhop_spin = self._dspin(0.4, 0.0, 10.0, 0.1)
         f.addRow("Z-hop (mm):", self.zhop_spin)
         self.hop_short_chk = QCheckBox("Z-hop on short travels too")
@@ -397,13 +434,6 @@ class MainWindow(QMainWindow):
             src = trimesh.creation.annulus(r_min=r_in, r_max=r_out, height=self.cyl_h.value())
         elif gtype == "Cube":
             src = trimesh.creation.box(extents=(self.cube_w.value(), self.cube_d.value(), self.cube_h.value()))
-        elif gtype == "Hollow Cube":
-            try:
-                src = hollow_box(self.cube_w.value(), self.cube_d.value(), self.cube_h.value(),
-                                 self.cube_wall.value())
-            except ValueError as e:
-                self.lbl_metrics.setText(f"Error: {e}")
-                return
         elif gtype == "Upload STL...":
             fname, _ = QFileDialog.getOpenFileName(self, "Open STL", "", "STL Files (*.stl)")
             if fname:
@@ -413,20 +443,29 @@ class MainWindow(QMainWindow):
         self.source_mesh = src
         self.apply_placement()
 
+    def _update_z_offset_visibility(self):
+        """The Z offset only makes sense when the part is NOT dropped to the bed."""
+        show = not self.chk_drop.isChecked()
+        self.off_z_label.setVisible(show)
+        self.off_z.setVisible(show)
+
     def reset_placement(self):
-        widgets = (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y, self.chk_center, self.chk_drop)
+        widgets = (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y, self.off_z,
+                   self.chk_center, self.chk_drop)
         for w in widgets:
             w.blockSignals(True)
-        for s in (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y):
+        for s in (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y, self.off_z):
             s.setValue(0)
         self.chk_center.setChecked(True)
         self.chk_drop.setChecked(True)
         for w in widgets:
             w.blockSignals(False)
+        self._update_z_offset_visibility()
         self.apply_placement()
 
     def apply_placement(self):
         """Re-places the source mesh. Results of earlier pipeline runs no longer match and are dropped."""
+        self._update_z_offset_visibility()
         if self.source_mesh is None:
             return
         had_results = self.stage1_model is not None
@@ -434,7 +473,7 @@ class MainWindow(QMainWindow):
             self.source_mesh,
             rotation_deg=(self.rot_x.value(), self.rot_y.value(), self.rot_z.value()),
             center_xy=self.chk_center.isChecked(), drop_to_bed=self.chk_drop.isChecked(),
-            offset_xy=(self.off_x.value(), self.off_y.value()))
+            offset_xy=(self.off_x.value(), self.off_y.value()), offset_z=self.off_z.value())
         self.stage1_model = self.stage2_traj = self.stage3_traj = None
         self.gcode = ""
         self.txt_gcode.clear()
@@ -446,7 +485,23 @@ class MainWindow(QMainWindow):
         if had_results:
             self.lbl_metrics.setText("Placement changed - run the pipeline again.")
         self._setup_view_controls()
+        self.frame_views()
         self.update_viewport()
+
+    def frame_views(self):
+        """
+        Points all 3D views at the part. X and Y of the camera (and of the floor grid) follow the part
+        wherever it was moved; Z is never faked - the grid stays on the bed (z = 0) so the part's
+        height above the bed is always what it really is.
+        """
+        if self.mesh is None or len(self.mesh.vertices) == 0:
+            return
+        b = self.mesh.bounds
+        centre = (b[0] + b[1]) / 2.0
+        dist = float(max(self.mesh.extents.max(), 10.0)) * 2.4
+        self._grid_origin = (round(float(centre[0]) / 5.0) * 5.0, round(float(centre[1]) / 5.0) * 5.0)
+        for w in (self.gl_stage0, self.gl_stage1, self.gl_stage2, self.gl_kine):
+            w.setCameraPosition(pos=Vector(float(centre[0]), float(centre[1]), float(centre[2])), distance=dist)
 
     # ------------------------------------------------------------------ Stage 0 function import
     def load_expression_from_file(self):
@@ -650,6 +705,11 @@ class MainWindow(QMainWindow):
                 top_solid_layers=self.top_spin.value(),
                 travel_command=self.travel_cmd_combo.currentText(),
                 retract_distance=self.retract_spin.value(),
+                unretract_distance=self.unretract_spin.value(),
+                retract_speed=self.retract_speed_spin.value(),
+                unretract_speed=self.unretract_speed_spin.value(),
+                # only the axes the machine really has appear in the G-code
+                include_rotary_axes=self.topo_combo.currentText() != "planar_3axis_xyz",
                 z_hop=self.zhop_spin.value(),
                 hop_short_travels=self.hop_short_chk.isChecked(),
             )
@@ -699,6 +759,7 @@ class MainWindow(QMainWindow):
             w.clear()
             g = gl.GLGridItem()
             g.scale(5, 5, 1)
+            g.translate(self._grid_origin[0], self._grid_origin[1], 0.0)
             w.addItem(g)
 
         if self.mesh is not None:

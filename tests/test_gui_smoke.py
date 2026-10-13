@@ -22,16 +22,6 @@ def win(monkeypatch):
     return w
 
 
-def test_hollow_cube_has_a_through_hole_and_pipeline_runs(win):
-    win.geom_combo.setCurrentText("Hollow Cube")
-    win.load_geometry()
-    assert win.mesh.is_watertight and win.mesh.bounds[0, 2] == pytest.approx(0)
-    win.run_pipeline()
-    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
-    mid = [w for w in win.stage2_traj.waypoints if w.layer_index == 8 and not w.is_travel_move]
-    assert mid and not any(abs(w.x) < 4.5 and abs(w.y) < 4.5 for w in mid)
-
-
 def test_placement_rotates_drops_and_invalidates_results(win):
     win.run_pipeline()
     assert win.stage2_traj is not None
@@ -115,3 +105,71 @@ def test_legend_sections_and_controls_exist(win):
     assert win.bottom_spin.value() == 3 and win.top_spin.value() == 3
     assert [win.travel_cmd_combo.itemText(i) for i in range(2)] == ["G0", "G1"]
     assert win.sections_layout.count() >= 7                   # collapsible sections (+ stretch)
+
+
+def test_hollow_cube_is_gone_from_the_geometry_list(win):
+    items = [win.geom_combo.itemText(i) for i in range(win.geom_combo.count())]
+    assert not any("Hollow Cube" in t for t in items) and "Hollow Cylinder" in items
+
+
+def test_z_offset_is_shown_only_without_drop_to_bed(win):
+    assert win.off_z.isHidden() and win.off_z_label.isHidden()
+    win.chk_drop.setChecked(False)
+    assert not win.off_z.isHidden() and not win.off_z_label.isHidden()
+    win.off_z.setValue(12.0)
+    assert win.mesh.bounds[0, 2] == pytest.approx(win.source_mesh.bounds[0, 2] + 12.0 - 0.0 - (
+        0.0))                                                  # keeps its own height + offset
+    win.chk_drop.setChecked(True)
+    assert win.off_z.isHidden() and win.mesh.bounds[0, 2] == pytest.approx(0.0)
+
+
+def test_camera_follows_the_part_in_xy_but_the_grid_stays_on_the_bed(win):
+    win.off_x.setValue(120.0)
+    win.off_y.setValue(80.0)
+    c = win.gl_stage0.opts["center"]
+    assert (c.x(), c.y()) == pytest.approx((120.0, 80.0), abs=1e-6)
+    assert c.z() == pytest.approx(win.cyl_h.value() / 2.0)          # real height above the bed, not shifted
+    assert win._grid_origin == pytest.approx((120.0, 80.0))
+    for w in (win.gl_stage1, win.gl_stage2, win.gl_kine):
+        assert w.opts["center"].x() == pytest.approx(120.0)
+    win.chk_drop.setChecked(False)
+    win.off_z.setValue(30.0)
+    assert win.gl_stage0.opts["center"].z() == pytest.approx(win.mesh.bounds.mean(axis=0)[2])
+
+
+def test_wheel_never_changes_a_parameter(win):
+    from PyQt6.QtCore import QPoint, QPointF, Qt
+    from PyQt6.QtGui import QWheelEvent
+    widgets = [win.layer_height_spin, win.perims_spin, win.strategy_combo, win.layer_hi, win.travel_cmd_combo,
+               win.play_slider, win.retract_spin]
+    for w in widgets:
+        before = w.value() if hasattr(w, "value") else w.currentIndex()
+        ev = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, 120),
+                         Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+        ev.accept()
+        w.wheelEvent(ev)
+        assert not ev.isAccepted(), type(w).__name__               # left for the scroll area
+        assert (w.value() if hasattr(w, "value") else w.currentIndex()) == before
+
+
+def test_planar_gcode_has_only_xyz_but_a_trunnion_machine_gets_b_and_c(win):
+    win.run_pipeline()
+    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
+    moves = [ln for ln in win.gcode.splitlines() if ln.startswith(("G0 ", "G1 "))]
+    assert moves and not any(" B" in ln or " C" in ln for ln in moves)
+    win.topo_combo.setCurrentText("trunnion_table_xyzbc")
+    win.run_pipeline()
+    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
+    assert any(" B" in ln and " C" in ln for ln in win.gcode.splitlines() if ln.startswith("G1 X"))
+
+
+def test_retract_and_unretract_come_from_separate_fields(win):
+    win.retract_spin.setValue(0.6)
+    win.unretract_spin.setValue(0.9)
+    win.retract_speed_spin.setValue(1800)
+    win.unretract_speed_spin.setValue(900)
+    win.run_pipeline()
+    assert win.lbl_metrics.text().startswith("Done"), win.lbl_metrics.text()
+    assert "G1 E-0.600 F1800 ; Retract" in win.gcode
+    assert "G1 E0.900 F900 ; Prime" in win.gcode

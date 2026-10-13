@@ -9,6 +9,23 @@ class BaseSlicingStrategy(ABC):
         if params is None: params = {}
         self.transition_height = params.get("transition_height", 0.0)
 
+    # -- layer grid ------------------------------------------------------------------------
+    # (self.start_z is z' of layer 0; the parameter 'start_z' is the base, one layer lower.)
+    # Layer i is printed at z' = self.start_z + i*h (the TOP of the layer; the first layer therefore
+    # sits at one layer height above the bed, never at z = 0) and its contours are cut from the
+    # mid-plane of the layer, z' - h/2 (so a slice never coincides with a top/bottom face).
+    def _first_layer_z(self, params: Dict[str, Any], bottom_z: float) -> float:
+        h = params.get("layer_height", 0.2)
+        # the parameter `start_z` is the BASE of the print (bed level of the part); the first
+        # layer is printed one layer height above it
+        return float(params.get("start_z", bottom_z)) + h
+
+    def _count_layers(self, start_z: float, end_z: float, h: float) -> int:
+        return max(1, int(np.ceil((end_z - start_z) / h - 1e-9)) + 1)
+
+    def _mid_offset(self) -> float:
+        return 0.5 * getattr(self, "layer_height", 0.2)
+
     @abstractmethod
     def get_layer_count(self) -> int:
         pass
@@ -98,7 +115,8 @@ class BaseSlicingStrategy(ABC):
         return {
             "layer_height": float(getattr(self, "layer_height", 0.2)),
             "transition_height": float(self.transition_height),
-            "start_z": float(getattr(self, "start_z", 0.0)),
+            # base of the print (the first layer is printed at start_z + layer_height)
+            "start_z": float(getattr(self, "start_z", 0.0)) - float(getattr(self, "layer_height", 0.2)),
             "end_z": float(getattr(self, "end_z", 0.0)),
         }
 
@@ -133,19 +151,19 @@ class PlanarStrategy(BaseSlicingStrategy):
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
         if len(self.mesh.vertices) > 0:
-            self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+            self.start_z = self._first_layer_z(params, self.mesh.bounds[0, 2])
             end_z = params.get("end_z", self.mesh.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
+            self.start_z = float(params.get("start_z", 0.0)) + self.layer_height
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+        self.num_layers = self._count_layers(self.start_z, end_z, self.layer_height)
 
     def get_layer_count(self) -> int:
         return self.num_layers
 
     def get_slice_plane(self, layer_idx: int):
-        z = self.start_z + layer_idx * self.layer_height
+        z = self.start_z + layer_idx * self.layer_height - self._mid_offset()
         return [0, 0, z], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
@@ -164,13 +182,13 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         self.mesh = mesh.copy()
         self.layer_height = params.get("layer_height", 0.2)
         if len(self.mesh.vertices) > 0:
-            self.start_z = params.get("start_z", self.mesh.bounds[0, 2])
+            self.start_z = self._first_layer_z(params, self.mesh.bounds[0, 2])
             end_z = params.get("end_z", self.mesh.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
+            self.start_z = float(params.get("start_z", 0.0)) + self.layer_height
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+        self.num_layers = self._count_layers(self.start_z, end_z, self.layer_height)
         self.start_tilt = np.radians(params.get("start_tilt_deg", 0.0))
         self.end_tilt = np.radians(params.get("end_tilt_deg", 0.0))
 
@@ -216,8 +234,10 @@ class ProgressiveTiltStrategy(BaseSlicingStrategy):
         # so that at y = pivot_y, the height is exactly z.
         # Plane eq: ny * (y - oy) + nz * (z_p - oz) = 0
         # If origin is [0, pivot_y, z], it satisfies this cleanly.
-        plane_origin = [0, self.pivot_y, z]
         plane_normal = [0, -np.sin(tilt), np.cos(tilt)]
+        # cut from the mid-plane of the layer: move the origin half a layer down along the normal
+        plane_origin = [0, self.pivot_y - self._mid_offset() * plane_normal[1],
+                        z - self._mid_offset() * plane_normal[2]]
         return plane_origin, plane_normal
 
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
@@ -282,17 +302,17 @@ class ConicalStrategy(BaseSlicingStrategy):
             self._refine_mesh(max_edge=wavelength * params.get("refine_fraction", 1.0/8.0))
         else:
             self.deformed = self.mesh.copy()
-        self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
+        self.start_z = self._first_layer_z(params, self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
             r = np.linalg.norm(self.deformed.vertices[:, :2], axis=1)
             f_val = r * self.tan_alpha
             self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
+            self.start_z = float(params.get("start_z", 0.0)) + self.layer_height
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+        self.num_layers = self._count_layers(self.start_z, end_z, self.layer_height)
 
     def get_resolved_params(self) -> Dict[str, Any]:
         resolved = super().get_resolved_params()
@@ -303,7 +323,7 @@ class ConicalStrategy(BaseSlicingStrategy):
         return self.num_layers
 
     def get_slice_plane(self, layer_idx: int):
-        z_prime = self.start_z + layer_idx * self.layer_height
+        z_prime = self.start_z + layer_idx * self.layer_height - self._mid_offset()
         return [0, 0, z_prime], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
@@ -372,7 +392,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
 
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
-        self.start_z = params.get("start_z", self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
+        self.start_z = self._first_layer_z(params, self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
             x = self.deformed.vertices[:, 0]
             y = self.deformed.vertices[:, 1]
@@ -380,10 +400,10 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
             self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
+            self.start_z = float(params.get("start_z", 0.0)) + self.layer_height
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+        self.num_layers = self._count_layers(self.start_z, end_z, self.layer_height)
 
     def _setup_field(self, params: Dict[str, Any]) -> None:
         self.expr = params.get("expression", "0.0")
@@ -405,7 +425,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         return self.num_layers
 
     def get_slice_plane(self, layer_idx: int):
-        z_prime = self.start_z + layer_idx * self.layer_height
+        z_prime = self.start_z + layer_idx * self.layer_height - self._mid_offset()
         return [0, 0, z_prime], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:
@@ -472,15 +492,15 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         # Precompute deformed mesh
         self.deformed = self.mesh.copy()
         if n_vert > 0:
-            self.start_z = params.get("start_z", self.deformed.bounds[0, 2])
+            self.start_z = self._first_layer_z(params, self.deformed.bounds[0, 2])
             self.deformed.vertices[:, 2] = self._solve_forward_z(
                 self.deformed.vertices[:, 2], self.vertex_deformations)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
         else:
-            self.start_z = params.get("start_z", 0.0)
+            self.start_z = float(params.get("start_z", 0.0)) + self.layer_height
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
-        self.num_layers = max(1, int(np.ceil((end_z - self.start_z) / self.layer_height)))
+        self.num_layers = self._count_layers(self.start_z, end_z, self.layer_height)
 
         # Setup for pure Numpy IDW (Inverse Distance Weighting) interpolation
         self.pts_2d = self.mesh.vertices[:, :2]
@@ -507,7 +527,7 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
         return self.num_layers
 
     def get_slice_plane(self, layer_idx: int):
-        z_prime = self.start_z + layer_idx * self.layer_height
+        z_prime = self.start_z + layer_idx * self.layer_height - self._mid_offset()
         return [0, 0, z_prime], [0, 0, 1]
 
     def deform_mesh(self) -> trimesh.Trimesh:

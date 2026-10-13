@@ -143,7 +143,7 @@ def test_sloped_surface_gets_a_solid_ring_over_a_sparse_core():
     regions = StandardToolpathGenerator().compute_layer_regions(model, profile)
 
     def r_region(idx):                       # analytic radius of the eroded infill region
-        return 10.0 * (1.0 - idx / 10.0) - 2 * NOZZLE
+        return 10.0 * (1.0 - (idx + 0.5) / 10.0) - 2 * NOZZLE      # layers are cut at mid-height
 
     for idx in (2, 3, 4, 5):
         r = regions[idx]

@@ -18,12 +18,14 @@ def place_mesh(mesh: trimesh.Trimesh,
                rotation_deg: Sequence[float] = (0.0, 0.0, 0.0),
                center_xy: bool = True,
                drop_to_bed: bool = True,
-               offset_xy: Tuple[float, float] = (0.0, 0.0)) -> trimesh.Trimesh:
+               offset_xy: Tuple[float, float] = (0.0, 0.0),
+               offset_z: float = 0.0) -> trimesh.Trimesh:
     """
     Returns a placed COPY of `mesh` (the input is never modified).
       1. rotate about the centre of the bounding box (X, then Y, then Z)
       2. centre the bounding box in XY (if `center_xy`), then add `offset_xy`
-      3. translate in Z so that the lowest point is at z = 0 (if `drop_to_bed`)
+      3. translate in Z so that the lowest point is at z = 0 (if `drop_to_bed`); otherwise the
+         part keeps its height and is moved by `offset_z` (ignored when dropping to the bed)
     """
     out = mesh.copy()
     if len(out.vertices) == 0:
@@ -41,5 +43,7 @@ def place_mesh(mesh: trimesh.Trimesh,
     shift[1] += offset_xy[1]
     if drop_to_bed:
         shift[2] = -out.bounds[0, 2]
+    else:
+        shift[2] = offset_z
     out.apply_translation(shift)
     return out

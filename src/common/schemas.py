@@ -1,4 +1,4 @@
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from typing import List, Optional, Tuple, Literal, Any, Dict
 
 class SlicerPluginParameterSchema(BaseModel):
@@ -38,14 +38,24 @@ class MinimalPrintProfile(BaseModel):
     print_speed: float = Field(1500.0, gt=0.0, description="Feedrate of extruding moves in mm/min")
     travel_speed: float = Field(3000.0, gt=0.0, description="Feedrate of travel moves in mm/min")
     z_speed: float = Field(1200.0, gt=0.0, description="Feedrate of the Z-hop moves in mm/min")
-    retract_speed: float = Field(2400.0, gt=0.0, description="Feedrate of retraction and priming in mm/min")
+    retract_speed: float = Field(2400.0, gt=0.0, description="Feedrate of the retraction (before a travel) in mm/min")
+    unretract_speed: Optional[float] = Field(None, gt=0.0, description="Feedrate of the un-retraction / priming (right before printing resumes) in mm/min; defaults to retract_speed")
 
     # --- travel behaviour ---
-    retract_distance: float = Field(0.8, ge=0.0, description="Retraction distance in mm for travel moves (0 disables retraction)")
+    retract_distance: float = Field(0.8, ge=0.0, description="Retraction distance in mm before a travel (0 disables retraction)")
+    unretract_distance: Optional[float] = Field(None, ge=0.0, description="Filament pushed back in mm right before printing resumes (0 = no prime move); defaults to retract_distance")
     z_hop: float = Field(0.4, ge=0.0, description="Z-hop height in mm during travel moves (0 disables the hop)")
     min_retract_travel: float = Field(1.5, ge=0.0, description="Travels shorter than this (mm) are made directly, without retraction and Z-hop")
     hop_short_travels: bool = Field(False, description="Z-hop also on travels shorter than min_retract_travel (they are still made without retraction).")
     travel_command: Literal["G0", "G1"] = Field("G0", description="G-code command used for non-extruding moves (G0 rapid or G1 linear)")
+
+    @model_validator(mode="after")
+    def _default_unretract(self):
+        if self.unretract_distance is None:
+            self.unretract_distance = self.retract_distance
+        if self.unretract_speed is None:
+            self.unretract_speed = self.retract_speed
+        return self
 
     @property
     def wall_count(self) -> int:

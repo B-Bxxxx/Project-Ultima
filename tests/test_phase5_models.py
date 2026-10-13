@@ -1,54 +1,15 @@
-"""Qt-free Phase 5 logic: hollow box, placement, layer range / playback model, view grouping."""
+"""Qt-free Phase 5 logic: placement, layer range / playback model, view grouping."""
 import numpy as np
 import pytest
 import trimesh
 
 from src.common.feature_styles import FEATURE_STYLES, group_lines_by_feature
 from src.common.placement import place_mesh, rotation_matrix
-from src.common.primitives import hollow_box
 from src.common.schemas import CLDataWaypoint, MinimalPrintProfile
 from src.common.view_model import (Playback, effective_layers, head_item, layer_count, move_range,
                                    status_text)
-from src.stage1_slicer.plugins.field_slicer import UniversalFieldSlicerPlugin
-from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 
 ALL = [s.key for s in FEATURE_STYLES]
-
-
-# ---------------------------------------------------------------- hollow box
-def test_hollow_box_is_a_valid_solid_with_the_right_volume():
-    m = hollow_box(30, 24, 20, 4)
-    assert m.is_watertight and m.is_winding_consistent
-    assert m.volume == pytest.approx((30 * 24 - 22 * 16) * 20)
-    assert np.allclose(m.bounds, [[-15, -12, 0], [15, 12, 20]])
-
-
-def test_hollow_box_has_a_through_hole():
-    m = hollow_box(30, 30, 20, 5)
-    for z in (0.1, 10.0, 19.9):                      # every height, including near top and bottom
-        section = m.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
-        polys = section.to_2D()[0].polygons_full
-        assert len(polys) == 1 and len(polys[0].interiors) == 1
-    # a ray along Z through the centre must not hit anything
-    assert len(m.ray.intersects_location([[0, 0, -5]], [[0, 0, 1]])[0]) == 0
-
-
-def test_hollow_box_validation():
-    with pytest.raises(ValueError):
-        hollow_box(10, 10, 10, 5)
-    with pytest.raises(ValueError):
-        hollow_box(10, 10, 10, 0)
-
-
-def test_hollow_box_toolpath_has_inner_walls_around_the_hole():
-    mesh = hollow_box(30, 30, 6, 5)
-    model = UniversalFieldSlicerPlugin().slice(mesh, {"strategy": "planar", "layer_height": 1.0})
-    prof = MinimalPrintProfile(layer_height=1.0, nozzle_diameter=0.4, num_perimeters=2, infill_density=0.2,
-                               top_solid_layers=1, bottom_solid_layers=1)
-    traj = StandardToolpathGenerator().generate_toolpath(model, prof)
-    mid = [w for w in traj.waypoints if w.layer_index == 3 and not w.is_travel_move]
-    assert not any(abs(w.x) < 4.5 and abs(w.y) < 4.5 for w in mid)     # nothing inside the 20x20 hole
-    assert any(abs(w.x) < 10.5 and abs(w.y) < 10.5 for w in mid)       # hole wall exists
 
 
 # ---------------------------------------------------------------- placement
@@ -152,3 +113,11 @@ def test_head_item_and_status_text():
     assert "Layer 2/4" in txt and "outer_wall" in txt and " B" not in txt
     assert status_text(None, 4) == "-"
     assert "travel" in status_text(items[0], 4)
+
+
+def test_place_mesh_z_offset_only_applies_without_drop_to_bed():
+    box = trimesh.creation.box((10, 10, 10))                  # z from -5 to 5
+    out = place_mesh(box, drop_to_bed=False, offset_z=7.0)
+    assert out.bounds[:, 2].tolist() == pytest.approx([2.0, 12.0])
+    out = place_mesh(box, drop_to_bed=True, offset_z=7.0)     # dropping wins
+    assert out.bounds[0, 2] == pytest.approx(0.0)

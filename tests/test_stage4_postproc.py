@@ -325,3 +325,39 @@ def test_invalid_travel_command_and_speeds_are_rejected():
         MinimalPrintProfile(travel_command="G2")
     with pytest.raises(ValidationError):
         MinimalPrintProfile(travel_speed=0)
+
+
+# ---------------------------------------------------------------------------------------------
+# retract and un-retract are separate parameters
+# ---------------------------------------------------------------------------------------------
+def test_unretract_defaults_to_the_retract_values():
+    p = MinimalPrintProfile(retract_distance=1.2, retract_speed=1800)
+    assert p.unretract_distance == pytest.approx(1.2) and p.unretract_speed == pytest.approx(1800)
+    p = MinimalPrintProfile(retract_distance=1.2, unretract_distance=0.0, unretract_speed=900)
+    assert p.unretract_distance == 0.0 and p.unretract_speed == 900
+
+
+def test_unretract_distance_and_speed_are_independent_of_retract():
+    gcode, _ = _gcode(retract_distance=0.8, retract_speed=2000, unretract_distance=1.1, unretract_speed=700)
+    long_run = travel_runs(_body(parse(gcode)))[-1]
+    kinds = [classify(c) for c in long_run]
+    assert kinds == ["retract", "zmove", "travel", "zmove", "prime"]
+    retract, prime = long_run[0], long_run[-1]
+    assert retract.params["E"] == pytest.approx(-0.8) and retract.params["F"] == 2000
+    assert prime.params["E"] == pytest.approx(1.1) and prime.params["F"] == 700
+    # the prime is the very last move before printing resumes
+    cmds = [c for c in parse(gcode) if c.is_move]
+    i = cmds.index(prime)
+    assert classify(cmds[i + 1]) == "extrude"
+
+
+def test_zero_unretract_distance_skips_only_the_prime_move():
+    gcode, _ = _gcode(retract_distance=0.8, unretract_distance=0.0)
+    assert [classify(c) for c in travel_runs(_body(parse(gcode)))[-1]] == ["retract", "zmove", "travel", "zmove"]
+
+
+def test_negative_unretract_is_rejected():
+    with pytest.raises(Exception):
+        MinimalPrintProfile(unretract_distance=-0.1)
+    with pytest.raises(Exception):
+        MinimalPrintProfile(unretract_speed=0)

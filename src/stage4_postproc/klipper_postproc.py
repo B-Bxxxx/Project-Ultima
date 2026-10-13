@@ -68,7 +68,7 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
         into), ';LAYER_COUNT:N' in the header
       * '; TYPE: <feature>' before the first extrusion of every layer and whenever the feature changes
       * every travel of at least `min_retract_travel` is: retract -> Z-hop up -> travel -> Z-hop
-        down -> prime; shorter travels are made directly. The travel and hop moves use
+        down -> prime (retract and unretract distance / speed are separate parameters); shorter travels are made directly. The travel and hop moves use
         `profile.travel_command` (G0 or G1).
       * no heater commands are written at the start (temperatures are handled by the printer
         configuration / start macro)
@@ -131,16 +131,19 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
         if prev is None:
             # First move of the print: nothing to retract; lift first so the nozzle never
             # drags across the bed on the way to the start point.
-            return {"retract": False, "hop": hop, "lift_z": s.z + profile.z_hop}
+            return {"retract": False, "prime": False, "hop": hop, "lift_z": s.z + profile.z_hop}
 
         distance = math.dist((prev.x, prev.y, prev.z), (s.x, s.y, s.z))
         if distance < profile.min_retract_travel:
             # short: never retract; hop only if requested
-            return {"retract": False, "hop": hop and profile.hop_short_travels,
+            return {"retract": False, "prime": False, "hop": hop and profile.hop_short_travels,
                     "lift_z": max(prev.z, s.z) + profile.z_hop}
 
+        retract = profile.retract_distance > 0.0
         return {
-            "retract": profile.retract_distance > 0.0,
+            "retract": retract,
+            # the filament pulled back before the travel is pushed back after it, right before printing
+            "prime": retract and profile.unretract_distance > 0.0,
             "hop": hop,
             # lift above the HIGHER of both ends so layer changes clear the new layer as well
             "lift_z": max(prev.z, s.z) + profile.z_hop,

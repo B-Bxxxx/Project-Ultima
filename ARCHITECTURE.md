@@ -21,7 +21,7 @@ All inter-stage data exchanges are strongly typed using Pydantic in `src/common/
 | Contract Schema | Origin -> Destination | Key Fields |
 | --- | --- | --- |
 | `UniversalSlicedModel` | Stage 1 -> Stage 2 | `layers` (List of `UniversalLayer`: `layer_index`, `z_height`, `z_prime`, `contours`), each contour with `points` (X,Y,Z), `normals` (I,J,K), `thicknesses` and `feature_type` (`boundary` straight from Stage 1). `metadata`: the slicing parameters plus the **resolved** values (`start_z`, `end_z`, `pivot_y`, `transition_height`, ...) written by `strategy.get_resolved_params()`; Stage 2 rebuilds the strategy from exactly these. Large numpy fields (e.g. `vertex_deformations`) are never stored. |
-| `MinimalPrintProfile` | Config -> Stage 2/4 | `layer_height`, `nozzle_diameter`, `num_perimeters`, `top_solid_layers`, `bottom_solid_layers` (0 disables the skin), `infill_density` (fraction 0..1), `infill_pattern` (`lines`), `infill_angle_deg`, `max_segment_length`, `continuous_spiral`, `filament_diameter`, speeds (`print_speed`, `travel_speed`, `z_speed`, `retract_speed`), `retract_distance`, `z_hop`, `min_retract_travel`, `travel_command` (`G0`/`G1`), `hop_short_travels` (Z-hop also on travels below `min_retract_travel`, never with retract). `wall_count` is accepted as an alias of `num_perimeters`. |
+| `MinimalPrintProfile` | Config -> Stage 2/4 | `layer_height`, `nozzle_diameter`, `num_perimeters`, `top_solid_layers`, `bottom_solid_layers` (0 disables the skin), `infill_density` (fraction 0..1), `infill_pattern` (`lines`), `infill_angle_deg`, `max_segment_length`, `continuous_spiral`, `filament_diameter`, speeds (`print_speed`, `travel_speed`, `z_speed`, `retract_speed`, `unretract_speed`), `retract_distance`, `unretract_distance` (retraction before a travel and the prime right before printing resumes are separate; both default to the retract values), `z_hop`, `min_retract_travel`, `travel_command` (`G0`/`G1`), `hop_short_travels` (Z-hop also on travels below `min_retract_travel`, never with retract). `wall_count` is accepted as an alias of `num_perimeters`. |
 | `CLDataTrajectory` | Stage 2 -> Stage 3 | `waypoints` (List of `CLDataWaypoint`): `x`, `y`, `z`, `i`, `j`, `k`, `extrusion_volume`, `feedrate`, `is_travel_move`, `feature_type`, `layer_index` (the layer a waypoint belongs to; a travel move belongs to the layer it travels INTO). |
 | `MachineConfig` | Config -> Stage 3 | `kinematic_topology`, pivot offsets, axis limits, `max_3axis_tilt_deg`. |
 | `MachineTrajectory` | Stage 3 -> Stage 4 | `states` (List of `MachineStateVector`): `x`, `y`, `z`, `b`, `c`, `extrusion_volume`, `feedrate`, `is_travel_move`, `feature_type`, `layer_index` (copied unchanged from the waypoint, so a state keeps its layer in machine space). |
@@ -52,8 +52,7 @@ Every strategy implements the same interface used by Stage 1 **and** Stage 2 (`b
 * `src/stage1_slicer/function_import.py` - user deformation functions f(x, y). **Coordinate reference:** x, y are the coordinates of the part *as placed on the bed* (after the placement step); layers follow `z = z0 - w(z)*f(x, y)` (w = transition blend), so a positive f lowers the layer surface.
   * A. expression file (`.txt`: one expression, `#` / `//` comment lines ignored, lines joined; `.json`: `{"expression": "..."}`), validated by the AST whitelist at load time.
   * B. data file (`x, y, f` columns, CSV / whitespace / `;`, optional header): a complete regular grid is used as is, scattered points are resampled to a regular grid with pure-numpy IDW. Result: `GridField` -> `grid_field` strategy. `preview_surface` samples either kind of field for the Stage 0 preview.
-* `src/common/placement.py` - `place_mesh`: rotate about the bounding-box centre (X, Y, Z order), centre in XY, offset, drop to z = 0. Returns a copy.
-* `src/common/primitives.py` - `hollow_box` (rectangular tube with a through-hole along Z; no boolean/triangulation engine needed).
+* `src/common/placement.py` - `place_mesh`: rotate about the bounding-box centre (X, Y, Z order), centre in XY, offset X/Y, then either drop to z = 0 or (drop off) move by `offset_z`. Returns a copy.
 * `src/common/view_model.py` - Qt-free view logic: layer range (`effective_layers`, `move_range`) and the `Playback` state machine; `feature_styles.group_lines_by_feature` supports `layer_min` and `move_limit`.
 
 ## Stage 2 Toolpath Generation (`src/stage2_toolpath/contour_generator.py`)
@@ -106,9 +105,13 @@ Execute with `pytest tests/`
 | `test_stage12_consistency.py` | Stage 1 -> 2 | Resolved metadata, identical Stage 1 / Stage 2 strategy results per layer, tilted-plane z, `external_field` end to end (Stage 1 -> JSON -> Stage 2). |
 | `test_stage2_toolpath.py` | Stage 2 | Top/bottom skin, zigzag linking, holes and islands, immutability, travel counts, `layer_index` through Stage 3. |
 | `test_visual_cases.py` | E2E CLI | Asserts all JSON and HTML files are generated correctly. |
-| `test_phase5_models.py` | Phase 5 logic | Hollow box validity/through-hole/toolpath, placement, layer range, playback state machine, grouping by range. |
+| `test_first_layer.py` | Layer convention | First layer at one layer height above the bed (never z = 0), last layer at the top, `start_z` = base of the print, every strategy's first layer flat. |
+| `test_phase5_models.py` | Phase 5 logic | Placement (incl. Z offset), layer range, playback state machine, grouping by range. |
 | `test_function_import.py` | Stage 0 import | Expression/data file parsing and rejection of unsafe input, GridField interpolation, `grid_field` equals the equivalent expression end to end, JSON-safe metadata. |
-| `test_gui_smoke.py` | GUI | Offscreen: hollow cube pipeline, placement invalidates results, layer range / playback / status, function import (skipped without PyQt6). |
+| `test_gui_smoke.py` | GUI | Offscreen: placement (Z offset only without drop-to-bed) invalidates results, camera framing, mouse wheel never edits a parameter, planar G-code has no B/C, separate retract/unretract, layer range / playback / status, function import (skipped without PyQt6). |
+
+## Layer convention (Stage 1)
+Layer `i` is printed at `z' = start_z + (i + 1) * h` where the parameter `start_z` is the base of the print (default: the lowest point of the mesh) - the first layer therefore sits one layer height above the bed, never at z = 0. Its contours are cut from the mid-plane of the layer (`z' - h/2`), so a slice never coincides with a top or bottom face. `UniversalLayer.z_height` is that mid-plane height; the printed Z comes from `project_to_layer`. The deformation blend `w` starts at the first layer (flat first layer).
 
 ## Stage 4 output conventions
 * Relative extrusion (M83), absolute positioning; no heater commands at the start (the end block still turns heaters off).

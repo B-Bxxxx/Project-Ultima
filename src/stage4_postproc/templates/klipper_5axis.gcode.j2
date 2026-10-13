@@ -25,8 +25,8 @@ G1 E-{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.ret
 {% if m.hop %}
 {{ cmd }} Z{{ "%.3f"|format(m.z) }} F{{ "%.0f"|format(profile.z_speed) }} ; Z-hop down
 {% endif %}
-{% if m.retract %}
-G1 E{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.retract_speed) }} ; Prime
+{% if m.prime %}
+G1 E{{ "%.3f"|format(profile.unretract_distance) }} F{{ "%.0f"|format(profile.unretract_speed) }} ; Prime
 {% endif %}
 {% else %}
 {% if m.type_marker %}
