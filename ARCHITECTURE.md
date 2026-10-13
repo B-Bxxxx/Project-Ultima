@@ -46,7 +46,7 @@ Every strategy implements the same interface used by Stage 1 **and** Stage 2 (`b
 | `get_resolved_params()` | Copy of the parameters after defaults were resolved (mesh-derived `start_z`, `end_z`, `pivot_y`, ...). Stored in the Stage 1 metadata. |
 | `project_to_layer(x, y, layer_idx)` | Lifts a 2D point of a layer to its true 3D position. Planar/deforming strategies use `undeform_point` at `z' = start_z + idx*h`; `progressive_tilt` returns the point on the tilted plane `z = z0 + (y - pivot_y) tan(t)`. |
 | `compute_normal`, `compute_thickness` | Normal and local layer thickness at a 3D point. |
-| `_solve_forward_z(z, f)` | Solves `z' = z + w(z') f` (fixed point); raises `ValueError` with the residual if it does not converge. |
+| `_solve_forward_z(z, f)` | Solves `z' = z + w(z') f` in closed form (w is piecewise linear): exact for every f < transition_height, however negative; f >= transition_height folds the layers over and logs a warning. |
 
 ## Function files and machine files (`config/functions`, `config/machines`)
 Both are JSON (`format` + `version` + `name`), validated strictly (unknown fields, missing parameters, out-of-range values are errors that name the element). Parameters are declared as `"name": {"label", "unit", "default" (mandatory), "min", "max", "step", "type": number|int|bool|choice}` (`src/common/param_spec.py`); the GUI builds one named input field per declared parameter and can save the current values back as new defaults.

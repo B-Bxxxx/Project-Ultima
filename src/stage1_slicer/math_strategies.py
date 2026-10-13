@@ -78,43 +78,35 @@ class BaseSlicingStrategy(ABC):
             raise ValueError(f"Mesh refinement produced too many vertices: {len(vertices)}")
         self.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
         self.deformed = self.mesh.copy()
-    def _solve_forward_z(self, z, f_val, tol: float = 1e-6, max_iter: int = 100):
+    def _solve_forward_z(self, z, f_val):
         """
-        Solves z' = z + w(z') * f for z' (fixed-point iteration), where w is the
-        blend weight of the transition zone. This is the exact inverse of
-        undeform_point (z = z' - w(z') * f).
+        Solves z' = z + w(z') * f for z' (exact inverse of undeform_point: z = z' - w(z') * f), where
+        w(z') = clip((z' - start_z) / T, 0, 1) is the blend weight of the transition zone (height T).
 
-        The iteration converges when |f| / transition_height < 1. If it does not
-        converge within `max_iter` iterations a ValueError with the residual is
-        raised, because silently continuing would produce wrong geometry.
+        w is piecewise linear, so there is a closed form - no iteration, no convergence limit:
+          * z' <= start_z      : z' = z                              (valid when z <= start_z)
+          * z' >= start_z + T  : z' = z + f                          (valid when z + f >= start_z + T)
+          * inside the zone    : z' = (z - start_z * f / T) / (1 - f / T)
+        For f < T the map z -> z' is strictly increasing (this includes ANY negative f, however
+        large); for f >= T it folds over (several z' belong to one z) - the upper branch is taken
+        and a warning is logged, because the layers then really cross each other.
         """
         z_arr = np.asarray(z, dtype=float)
-        f_arr = np.asarray(f_val, dtype=float)
-        if self.transition_height > 0.0 and f_arr.size and float(np.max(f_arr)) >= self.transition_height:
-            # z -> z' has the slope 1 / (1 - f/T) inside the transition zone: for f >= T it is no longer
-            # monotonic, i.e. the layer surfaces fold over and the slice may be wrong without any error.
-            logger.warning("max(f) = %.3g >= transition_height = %.3g: the deformation can fold the layers over; "
-                           "increase transition_height above max(f) or reduce the deformation.",
-                           float(np.max(f_arr)), self.transition_height)
-        z_prime = z_arr.copy()
-        residual = 0.0
-        for _ in range(max_iter):
-            if self.transition_height <= 0.0:
-                w = np.ones_like(z_prime)
-            else:
-                sz = getattr(self, "start_z", 0.0)
-                w = np.clip((z_prime - sz) / self.transition_height, 0.0, 1.0)
-            new_z_prime = z_arr + w * f_arr
-            residual = float(np.max(np.abs(new_z_prime - z_prime))) if new_z_prime.size else 0.0
-            z_prime = new_z_prime
-            if residual < tol:
-                return z_prime if isinstance(z, np.ndarray) else float(z_prime)
-        raise ValueError(
-            f"Forward deformation z' = z + w(z')*f did not converge after {max_iter} "
-            f"iterations (residual {residual:.3g}). The deformation is too steep for "
-            f"transition_height={self.transition_height}: increase transition_height "
-            f"or reduce the deformation (need max|f| < transition_height)."
-        )
+        f_arr = np.broadcast_to(np.asarray(f_val, dtype=float), z_arr.shape)
+        T = float(self.transition_height)
+        if T <= 0.0:
+            z_prime = z_arr + f_arr
+        else:
+            if f_arr.size and float(np.max(f_arr)) >= T:
+                logger.warning("max(f) = %.3g >= transition_height = %.3g: the deformation folds the layers over; "
+                               "increase transition_height above max(f) or reduce the deformation.",
+                               float(np.max(f_arr)), T)
+            s0 = float(getattr(self, "start_z", 0.0))
+            denom = 1.0 - f_arr / T
+            safe = np.where(np.abs(denom) > 1e-12, denom, 1.0)
+            inside = (z_arr - s0 * f_arr / T) / safe
+            z_prime = np.where(z_arr <= s0, z_arr, np.where(z_arr + f_arr >= s0 + T, z_arr + f_arr, inside))
+        return z_prime if isinstance(z, np.ndarray) else float(z_prime)
 
     def get_resolved_params(self) -> Dict[str, Any]:
         """

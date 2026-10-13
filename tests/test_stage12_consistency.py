@@ -6,6 +6,7 @@ import pytest
 import trimesh
 
 from src.common.schemas import MinimalPrintProfile, UniversalSlicedModel
+from src.stage1_slicer.function_file import FunctionSpec
 from src.stage1_slicer.math_strategies import build_strategy
 from src.stage1_slicer.plugins.field_slicer import UniversalFieldSlicerPlugin
 from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
@@ -164,16 +165,29 @@ def test_solve_forward_z_is_exact_inverse_of_undeform():
     np.testing.assert_allclose(zp - w * f, z, atol=1e-5)
 
 
-def test_solve_forward_z_raises_clear_error_when_not_converging():
-    # Vertices inside the transition zone + a strongly NEGATIVE field make the
-    # fixed-point iteration oscillate between two values (no solution found).
-    mesh = _offset_cylinder()
-    v, f = trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, max_edge=1.0)
-    mesh = trimesh.Trimesh(vertices=v, faces=f)
-    params = {"strategy": "conical", "layer_height": 1.0, "cone_angle_deg": -70.0,
-              "transition_height": 4.0, "refine_mesh": False}      # |f| up to ~27 >> transition_height
-    with pytest.raises(ValueError, match="did not converge"):
-        build_strategy("conical", mesh, params)
+def test_solve_forward_z_handles_any_negative_field_exactly():
+    # A V-groove f = -k|x| with |f| up to 7.5 and transition_height 5 used to end in "did not converge"
+    # (the old fixed-point iteration needs |f| < T); the closed form has no such limit for f < T.
+    strat = build_strategy("planar", trimesh.creation.box(extents=(10, 10, 10)), {"layer_height": 1.0, "transition_height": 5.0})
+    s0 = strat.start_z
+    rng = np.random.default_rng(1)
+    z = rng.uniform(s0 - 2, s0 + 20, 2000)
+    f = rng.uniform(-30.0, 4.9, 2000)
+    zp = strat._solve_forward_z(z, f)
+    w = np.clip((zp - s0) / 5.0, 0.0, 1.0)
+    np.testing.assert_allclose(zp - w * f, z, atol=1e-9)           # exact inverse of undeform
+    for fv in (-30.0, -7.5, 0.0, 4.9):                             # strictly increasing: layers never cross
+        q = strat._solve_forward_z(np.linspace(s0 - 2, s0 + 30, 300), np.full(300, fv))
+        assert (np.diff(q) > 0).all()
+
+
+def test_v_groove_function_slices_with_a_transition_smaller_than_the_depth():
+    spec = FunctionSpec.from_dict({"format": "cam-function", "version": 2, "name": "V", "expression": "-k * np.abs(x)",
+                                   "parameters": {"k": {"default": 0.5}}})
+    mesh = trimesh.creation.cylinder(radius=15, height=20, sections=48)
+    mesh.apply_translation((0, 0, 10))
+    model = UniversalFieldSlicerPlugin().slice(mesh, {"layer_height": 0.5, "transition_height": 5.0, **spec.to_slicer_params()})
+    assert len(model.layers) > 30 and all(layer.contours for layer in model.layers[1:-2])
 
 
 def test_large_positive_field_warns_about_folding(caplog):

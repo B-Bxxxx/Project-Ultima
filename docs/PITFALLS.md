@@ -58,6 +58,7 @@ Problems and traps met while building the pipeline - raw material for the docume
 | 34 | **Hungarian locale swallowed the decimal point**: typing `0.5` in a spin box gave 5, `12.75` gave 1275. | fixed | Decimal spin boxes use the C locale and accept `.` and `,`; keyboard tracking is off (value is committed on Enter / Tab / arrows, so typing no longer rebuilds the scene for every digit). `tests/test_input_widgets.py` runs with `hu_HU`. |
 | 35 | Spin box / combo arrows disappeared with the neon stylesheet (QSS cannot draw triangles from borders). | fixed | Arrow images are drawn once into a temp folder and referenced by the stylesheet. |
 | 36 | **Flat top face vs. non-planar layers**: the layers follow z = z0 - f(x, y) but the part's top is a flat plane, so the last layers are only partly there (terraces / a serrated rim). Expected geometry, not a slicing error. | open | Needs a top transition (the deformation fades out towards the top) - proposed, not implemented. |
+| 37 | **"did not converge" on a harmless negative field** (V-groove f = -k*abs(x), |f| 7.5 > transition_height 5): the old fixed-point iteration for z' = z + w(z')*f needs |f| < T although the equation always has an exact solution for f < T. | fixed | Closed-form solution (w is piecewise linear), no iteration; only f >= T (real fold) is warned about. Note: a negative f inside the transition zone makes the real layer spacing larger, up to h * (1 + |f| / T). |
 
 ## Process
 * A long single prompt overwhelms an assistant; split into small, verifiable tasks.
