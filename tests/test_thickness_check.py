@@ -98,14 +98,38 @@ def test_impossible_when_layer_height_outside_window():
     assert sug.relevant and not sug.possible
 
 
-def test_gui_label_follows_machine_mode():
+def _window():
     from PyQt6.QtWidgets import QApplication
     global _QAPP
     _QAPP = QApplication.instance() or QApplication([])
     from src.gui_app import MainWindow
     w = MainWindow()
     w.layer_height_spin.setValue(0.2)
+    return w
+
+
+def test_gui_label_shows_both_directions():
+    w = _window()
     w.function_combo.setCurrentText("Dome (button)")
     w.update_transition_advice()
     txt = w.lbl_transition.text()
-    assert "Vertical gap" in txt and "normal gap" in txt and "direction" in txt
+    assert "vertical" in txt and "normal" in txt and ("OK" in txt or "NOT printable" in txt)
+
+
+def test_gui_note_is_not_repeated_and_button_hidden_without_effect():
+    w = _window()
+    w.function_combo.setCurrentText("Progressive tilt")
+    w.update_transition_advice()
+    for _ in range(3):
+        w.use_suggested_transition()
+    assert w.lbl_transition.text().count("does not change") <= 1
+    assert not w.btn_suggested.isVisibleTo(w)             # the transition cannot help tilting layers
+
+
+def test_gui_button_visible_when_transition_helps():
+    w = _window()
+    w.function_combo.setCurrentText("Conical")
+    w.update_transition_advice()
+    assert w.btn_suggested.isVisibleTo(w)
+    w.use_suggested_transition()
+    assert w.trans_height_spin.value() > 2.0

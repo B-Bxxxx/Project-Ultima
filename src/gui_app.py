@@ -448,6 +448,8 @@ class MainWindow(QMainWindow):
         f.addRow("Transition H:", self.trans_height_spin)
         self.lbl_transition = QLabel("")
         self.lbl_transition.setWordWrap(True)
+        self.lbl_transition.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+        self._check_text, self._check_note, self._check_relevant = "", "", True
         f.addRow(self.lbl_transition)
         self.btn_suggested = QPushButton("Use suggested transition")
         self.btn_suggested.clicked.connect(self.use_suggested_transition)
@@ -707,43 +709,58 @@ class MainWindow(QMainWindow):
             self._check_timer.start()
 
     def _show_check(self, stats, source):
-        """Label text + colour from GapStats; the machine mode decides, both directions are shown."""
+        """Compact text + verdict from GapStats; the machine mode decides, both directions are shown."""
         chk = thickness_check.check(stats, self.nozzle_spin.value(), self._is_rotary(), self.layer_height_spin.value())
         lo, hi = chk.window
         other = "normal" if chk.direction == "vertical" else "vertical"
-        lines = [f"Printable layer gap with this nozzle: {lo:.2f} .. {hi:.2f} mm ({source}).",
-                 f"Vertical gap {stats.v_min:.3f} .. {stats.v_max:.3f} mm, normal gap {stats.n_min:.3f} .. {stats.n_max:.3f} mm.",
-                 f"This machine works in the {chk.direction} direction: " + ("OK." if chk.ok else "NOT printable.")]
-        if chk.ok and not chk.both_ok:
-            lines.append(f"Note: not printable in the {other} direction (other machine type).")
-        elif chk.both_ok:
-            lines.append("Printable in both directions.")
-        lines.extend(chk.messages)
+        lines = [f"Nozzle window {lo:.2f} .. {hi:.2f} mm ({source})",
+                 f"vertical {stats.v_min:.3f} .. {stats.v_max:.3f} | normal {stats.n_min:.3f} .. {stats.n_max:.3f} mm"]
+        if chk.ok and chk.both_ok:
+            lines.append("OK in both directions.")
+        elif chk.ok:
+            lines.append(f"OK for this machine ({chk.direction}); not printable in the {other} direction.")
+        else:
+            lines.append(f"NOT printable for this machine ({chk.direction}):")
+            lines.extend("- " + m.split(": ", 1)[-1] for m in chk.messages)
         return "\n".join(lines), chk
+
+    def _render_check(self, ok=True):
+        text = self._check_text + (("\n" + self._check_note) if self._check_note else "")
+        self.lbl_transition.setText(text)
+        self.lbl_transition.setStyleSheet(f"color: {gui_theme.OK if ok else gui_theme.ERR};")
+        self.lbl_transition.updateGeometry()
 
     def update_transition_advice(self, *_):
         if not hasattr(self, "lbl_transition"):
             return
         self.btn_suggested.setVisible(False)
+        self._check_note = ""
         params, mesh = None, self.mesh
         try:
             params = self._stage1_params()
         except (FunctionFileError, ValueError):
             params = None
         if params is None or mesh is None or len(mesh.vertices) == 0:
-            self.lbl_transition.setText("")
+            self._check_text = ""
+            self._render_check()
             return
         name = params.pop("strategy")
         try:
             stats = thickness_check.probe(mesh, name, params)
+            T = max(self.trans_height_spin.value(), 0.1)
+            far = thickness_check.probe(mesh, name, params, T * 2.0 + 1.0)
         except Exception as e:                           # the live label must never break the GUI
-            self.lbl_transition.setText(f"Layer-gap check not available: {e}")
+            self._check_text = f"Layer-gap check not available: {e}"
+            self._render_check()
             self.lbl_transition.setStyleSheet(f"color: {gui_theme.MUTED};")
             return
-        text, chk = self._show_check(stats, "estimate on sample points")
-        self.lbl_transition.setText(text)
-        self.lbl_transition.setStyleSheet(f"color: {gui_theme.OK if chk.ok else gui_theme.ERR};")
-        self.btn_suggested.setVisible(not chk.ok)
+        self._check_relevant = not all(abs(x - y) < 1e-9 for x, y in zip(stats.as_tuple(), far.as_tuple()))
+        self._check_text, chk = self._show_check(stats, "estimate")
+        if not chk.ok and not self._check_relevant:
+            self._check_note = "The transition height does not change these gaps."
+        self._render_check(chk.ok)
+        self._check_ok = chk.ok
+        self.btn_suggested.setVisible(not chk.ok and self._check_relevant)     # only when the transition can help
 
     def use_suggested_transition(self):
         """Bisect the smallest transition height that passes (only on click)."""
@@ -754,11 +771,14 @@ class MainWindow(QMainWindow):
         sug = thickness_check.suggest_transition(mesh, name, params, self.nozzle_spin.value(), self._is_rotary(),
                                                  self.trans_height_spin.value(), self.layer_height_spin.value())
         if not sug.relevant:
-            self.lbl_transition.setText(self.lbl_transition.text() + "\nThe transition height has no effect on the gaps of this function.")
+            self._check_note = "The transition height does not change these gaps."
         elif not sug.possible:
-            self.lbl_transition.setText(self.lbl_transition.text() + "\nNo transition height makes this printable - change the function parameters.")
+            self._check_note = "No transition height makes this printable - change the function parameters or the layer height."
         elif sug.min_transition is not None:
-            self.trans_height_spin.setValue(sug.min_transition)
+            self.trans_height_spin.setValue(sug.min_transition)       # triggers a fresh check
+            return
+        self._render_check(False)
+        self.btn_suggested.setVisible(False)
 
     def current_function(self):
         return self.functions.get(self.function_combo.currentText())
