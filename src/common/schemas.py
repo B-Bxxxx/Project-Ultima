@@ -75,6 +75,8 @@ class SpatialContour(BaseModel):
     points: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (X, Y, Z) coordinates")
     normals: List[Tuple[float, float, float]] = Field(..., description="Ordered list of (I, J, K) surface normals corresponding to the points")
     thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
+    vertical_gaps: Optional[List[float]] = Field(None, description="Stage 1: vertical (Z) distance from this layer's surface to the next layer at each point - the gap a vertical (3-axis) nozzle works in")
+    normal_gaps: Optional[List[float]] = Field(None, description="Stage 1: distance between this and the next layer measured along the layer's surface normal at each point - the gap a nozzle aligned with the normal (5-axis) works in")
     feature_type: str = Field("boundary", description="Type of feature: boundary, outer_wall, inner_wall, bottom_solid, top_solid or infill (sparse)")
 
 class UniversalLayer(BaseModel):

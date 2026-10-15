@@ -91,6 +91,7 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                     undeformed_normals = []
                     undeformed_pts = []
                     thicknesses = []
+                    vgaps, ngaps = [], []
                     for pt in contour.points:
                         u_pt = strategy.undeform_point(pt, layer_idx)
                         norm = strategy.compute_normal(u_pt, layer_idx)
@@ -98,9 +99,14 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                         undeformed_pts.append(u_pt)
                         undeformed_normals.append(norm)
                         thicknesses.append(thick)
+                        vg, ng = strategy.layer_gaps(u_pt[0], u_pt[1], layer_idx)
+                        vgaps.append(vg)
+                        ngaps.append(ng)
                     contour.points = undeformed_pts
                     contour.normals = undeformed_normals
                     contour.thicknesses = thicknesses
+                    contour.vertical_gaps = vgaps
+                    contour.normal_gaps = ngaps
                     contour.feature_type = "boundary"
 
                 z_nominal = plane_origin[2]

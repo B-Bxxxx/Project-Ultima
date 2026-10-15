@@ -64,6 +64,8 @@ Problems and traps met while building the pipeline - raw material for the docume
 | 40 | Default layer height 0.4 on a 0.4 nozzle is above the 0.8 x nozzle window; with any function the advice flags it. | open | Lower the GUI default (0.2) or keep and explain. |
 | 41 | Real layer spacing and extrusion thickness are computed for the vertical direction only; on steep flanks the thickness along the normal is smaller by cos(slope). | open | Decide with the first test prints (material excess is deferred). |
 
+* The thickness check is estimated (vertical and normal gap to the next layer, per Stage 1 point). The exact gap along the nozzle (normal / tool alignment) needs Stage 3 and is not checked yet; with a default layer height of 0.4 on a 0.4 nozzle the check fails by design (window 0.10 .. 0.32).
+
 ## Process
 * A long single prompt overwhelms an assistant; split into small, verifiable tasks.
 * A branch that deletes unrelated files can look like a successful implementation - always diff against main before merging.

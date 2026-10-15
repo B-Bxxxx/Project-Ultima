@@ -132,6 +132,22 @@ class BaseSlicingStrategy(ABC):
         z_prime = getattr(self, "start_z", 0.0) + layer_idx * getattr(self, "layer_height", 0.2)
         return self.undeform_point((x, y, z_prime), layer_idx)
 
+    def layer_gaps(self, x: float, y: float, layer_idx: int, eps: float = 1e-4) -> Tuple[float, float]:
+        """
+        (vertical gap, normal gap) between layer `layer_idx` and the next one at (x, y), measured on the
+        real layer surfaces (project_to_layer) - the same definition for every strategy.
+          vertical = Z_{i+1}(x, y) - Z_i(x, y)                 (what a vertical nozzle sees)
+          normal   = vertical * cos(slope of layer i)           (what a nozzle along the normal sees)
+        The slope comes from finite differences of the surface itself, so it does not depend on how a
+        strategy blends its normals.
+        """
+        z0 = self.project_to_layer(x, y, layer_idx)[2]
+        z1 = self.project_to_layer(x, y, layer_idx + 1)[2]
+        dzdx = (self.project_to_layer(x + eps, y, layer_idx)[2] - self.project_to_layer(x - eps, y, layer_idx)[2]) / (2 * eps)
+        dzdy = (self.project_to_layer(x, y + eps, layer_idx)[2] - self.project_to_layer(x, y - eps, layer_idx)[2]) / (2 * eps)
+        vertical = float(z1 - z0)
+        return vertical, float(vertical / np.sqrt(1.0 + dzdx * dzdx + dzdy * dzdy))
+
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
         """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
         return getattr(self, "layer_height", 0.2)

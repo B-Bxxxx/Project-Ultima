@@ -30,7 +30,7 @@ from src.stage1_slicer.function_file import (
 )
 from src.stage1_slicer.function_import import ExpressionField, GridField, preview_surface
 from src.stage1_slicer.registry import PluginRegistry
-from src.stage1_slicer.transition_advice import advise, field_range
+from src.stage1_slicer import thickness_check
 from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 from src.stage3_kinematics.machine_file import (
     MachineFileError, MachineSpec, load_machine_dir, load_machine_file, save_machine_file,
@@ -209,10 +209,15 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.load_geometry()
+        self._check_timer = QTimer(self)                 # debounce: the probe takes a fraction of a second
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(300)
+        self._check_timer.timeout.connect(self.update_transition_advice)
         for w in (self.trans_height_spin, self.layer_height_spin, self.nozzle_spin):
-            w.valueChanged.connect(self.update_transition_advice)
-        self.function_form.changed.connect(self.update_transition_advice)
-        self.function_combo.currentTextChanged.connect(self.update_transition_advice)
+            w.valueChanged.connect(self._schedule_check)
+        self.function_form.changed.connect(self._schedule_check)
+        self.function_combo.currentTextChanged.connect(self._schedule_check)
+        self.machine_combo.currentTextChanged.connect(self._schedule_check)
         self.update_transition_advice()
 
     # ------------------------------------------------------------------------------- UI
@@ -684,45 +689,76 @@ class MainWindow(QMainWindow):
         if errors:
             self.lbl_function.setText("Skipped: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
 
-    def transition_advice(self):
-        """Advice for the transition height of the current function over the placed part (None: not applicable)."""
-        spec, mesh = self.current_function(), self.mesh
-        if spec is None or mesh is None or len(mesh.vertices) == 0:
+    # ------------------------------------------------------------ layer-gap check (function independent)
+    def _stage1_params(self):
+        fspec = self.current_function()
+        if fspec is None:
             return None
-        b = mesh.bounds
-        try:
-            rng = field_range(spec, self.function_form.values(), (b[0, 0], b[1, 0], b[0, 1], b[1, 1]))
-        except (FunctionFileError, ValueError):
-            return None
-        if rng is None or (abs(rng[0]) < 1e-9 and abs(rng[1]) < 1e-9):
-            return None                                    # tilting or flat layers: the transition does not stretch anything
-        return advise(rng[0], rng[1], self.layer_height_spin.value(), self.nozzle_spin.value(), self.trans_height_spin.value())
+        p = {"layer_height": self.layer_height_spin.value(), "transition_height": self.trans_height_spin.value()}
+        p.update(fspec.to_slicer_params(self.function_form.values()))
+        return p
+
+    def _is_rotary(self):
+        mspec = self.current_machine()
+        return bool(mspec is not None and mspec.has_rotary_axes)
+
+    def _schedule_check(self, *_):
+        if hasattr(self, "_check_timer"):
+            self._check_timer.start()
+
+    def _show_check(self, stats, source):
+        """Label text + colour from GapStats; the machine mode decides, both directions are shown."""
+        chk = thickness_check.check(stats, self.nozzle_spin.value(), self._is_rotary(), self.layer_height_spin.value())
+        lo, hi = chk.window
+        other = "normal" if chk.direction == "vertical" else "vertical"
+        lines = [f"Printable layer gap with this nozzle: {lo:.2f} .. {hi:.2f} mm ({source}).",
+                 f"Vertical gap {stats.v_min:.3f} .. {stats.v_max:.3f} mm, normal gap {stats.n_min:.3f} .. {stats.n_max:.3f} mm.",
+                 f"This machine works in the {chk.direction} direction: " + ("OK." if chk.ok else "NOT printable.")]
+        if chk.ok and not chk.both_ok:
+            lines.append(f"Note: not printable in the {other} direction (other machine type).")
+        elif chk.both_ok:
+            lines.append("Printable in both directions.")
+        lines.extend(chk.messages)
+        return "\n".join(lines), chk
 
     def update_transition_advice(self, *_):
         if not hasattr(self, "lbl_transition"):
             return
-        adv = self.transition_advice()
         self.btn_suggested.setVisible(False)
-        if adv is None:
+        params, mesh = None, self.mesh
+        try:
+            params = self._stage1_params()
+        except (FunctionFileError, ValueError):
+            params = None
+        if params is None or mesh is None or len(mesh.vertices) == 0:
             self.lbl_transition.setText("")
             return
-        lo, hi = adv.window
-        lines = [f"Function over the part: {adv.f_min:.2f} .. {adv.f_max:.2f} mm. "
-                 f"Printable layer spacing with this nozzle: {lo:.2f} .. {hi:.2f} mm."]
-        if adv.thickness_min is not None:
-            lines.append(f"Layer spacing at this transition: {max(adv.thickness_min, 0.0):.2f} .. {adv.thickness_max:.2f} mm.")
-        if adv.min_transition > 0:
-            lines.append(f"Suggested minimum transition: {adv.min_transition:.1f} mm.")
-        lines.extend(adv.messages)
-        self.lbl_transition.setText("\n".join(lines))
-        colour = gui_theme.OK if adv.ok else gui_theme.ERR
-        self.lbl_transition.setStyleSheet(f"color: {colour};")
-        self.btn_suggested.setVisible(adv.possible and adv.min_transition > self.trans_height_spin.value() + 1e-9)
+        name = params.pop("strategy")
+        try:
+            stats = thickness_check.probe(mesh, name, params)
+        except Exception as e:                           # the live label must never break the GUI
+            self.lbl_transition.setText(f"Layer-gap check not available: {e}")
+            self.lbl_transition.setStyleSheet(f"color: {gui_theme.MUTED};")
+            return
+        text, chk = self._show_check(stats, "estimate on sample points")
+        self.lbl_transition.setText(text)
+        self.lbl_transition.setStyleSheet(f"color: {gui_theme.OK if chk.ok else gui_theme.ERR};")
+        self.btn_suggested.setVisible(not chk.ok)
 
     def use_suggested_transition(self):
-        adv = self.transition_advice()
-        if adv is not None and adv.possible and adv.min_transition > 0:
-            self.trans_height_spin.setValue(float(np.ceil(adv.min_transition * 10.0) / 10.0))
+        """Bisect the smallest transition height that passes (only on click)."""
+        params, mesh = self._stage1_params(), self.mesh
+        if params is None or mesh is None:
+            return
+        name = params.pop("strategy")
+        sug = thickness_check.suggest_transition(mesh, name, params, self.nozzle_spin.value(), self._is_rotary(),
+                                                 self.trans_height_spin.value(), self.layer_height_spin.value())
+        if not sug.relevant:
+            self.lbl_transition.setText(self.lbl_transition.text() + "\nThe transition height has no effect on the gaps of this function.")
+        elif not sug.possible:
+            self.lbl_transition.setText(self.lbl_transition.text() + "\nNo transition height makes this printable - change the function parameters.")
+        elif sug.min_transition is not None:
+            self.trans_height_spin.setValue(sug.min_transition)
 
     def current_function(self):
         return self.functions.get(self.function_combo.currentText())
@@ -1069,10 +1105,11 @@ class MainWindow(QMainWindow):
             pts = len(self.stage2_traj.waypoints)
             self._setup_view_controls()
             note = ""
-            adv = self.transition_advice()
-            if adv is not None and not adv.ok:
-                note = "\nWarning: " + ("; ".join(adv.messages) if adv.messages else
-                                         f"transition height is below the suggested minimum {adv.min_transition:.1f} mm")
+            stats = thickness_check.measure_model(self.stage1_model)
+            if stats is not None:
+                _, chk = self._show_check(stats, "measured on the slice")
+                if not chk.ok:
+                    note = "\nWarning (measured layer gaps): " + "; ".join(chk.messages)
             self.lbl_metrics.setText(f"Done in {dt:.2f}s | Layers: {self._layer_total()} | Pts: {pts}{note}")
             self.update_viewport()
 
