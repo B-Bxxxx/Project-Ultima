@@ -129,4 +129,4 @@ Layer `i` is printed at `z' = start_z + (i + 1) * h` where the parameter `start_
 * End block: lift `park_lift` mm above the highest point (no fixed Z); `B0 C0` follows only on rotary machines. `thickness_model='nozzle_axis'` scales E by 1/cos(nozzle axis vs layer normal) using `MachineStateVector.tool_alignment`.
 * Relative extrusion (M83), absolute positioning; no heater commands at the start (the end block still turns heaters off).
 * `;LAYER_COUNT:N` in the header, `;LAYER:n` before the first move of each layer, `; TYPE: <feature>` per layer/feature change.
-* Every travel >= `min_retract_travel`: retract, Z-hop up (above the higher of both ends), travel, Z-hop down, prime. Travel/hop moves use `travel_command` (G0 or G1). The first move lifts without retracting.
+* Every travel >= `min_retract_travel`: retract, Z-hop up (highest Z of the layer the travel runs in - of both layers at a layer change - plus `z_hop`, so wavy layers are cleared too), travel, Z-hop down, prime. Travel/hop moves use `travel_command` (G0 or G1). The first move lifts without retracting.

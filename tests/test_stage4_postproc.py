@@ -410,3 +410,37 @@ def test_nozzle_axis_model_scales_extrusion_by_the_actual_nozzle_angle():
     assert e_of("nozzle_axis", 1.0) == pytest.approx(base)            # aligned nozzle: unchanged
     assert e_of("nozzle_axis", 0.5) == pytest.approx(base * 2.0, rel=1e-3)
     assert e_of("nozzle_axis", 0.01) == pytest.approx(base / 0.2, rel=1e-3)     # grazing angle is capped
+
+
+# ---------------------------------------------------------------------------------------------
+# Z-hop height follows the highest point of the layer
+# ---------------------------------------------------------------------------------------------
+def _wavy_layer():
+    """Layer 0 rises to z=1.0 in the middle; the travel runs between two LOW points (0.2) of the same layer."""
+    return MachineTrajectory(states=[
+        _state(0, 0, 0.2, 0, travel=True),
+        _state(10, 0, 0.2, 0),
+        _state(20, 0, 1.0, 0),                              # the highest point of the layer
+        _state(30, 0, 0.2, 0),
+        _state(0, 20, 0.2, 0, feature="infill", travel=True),   # long travel, both ends low
+        _state(30, 20, 0.2, 0, feature="infill"),
+    ])
+
+
+def test_hop_clears_the_highest_point_of_the_layer():
+    gcode, _ = _gcode(_wavy_layer(), z_hop=0.4, min_retract_travel=1.5)
+    runs = travel_runs(_body(parse(gcode)))
+    up = next(c for c in runs[-1] if classify(c) == "zmove")
+    assert up.params["Z"] == pytest.approx(1.0 + 0.4)       # layer top + hop, not max(end points) + hop
+    first = runs[0]
+    assert next(c for c in first if classify(c) == "zmove").params["Z"] == pytest.approx(1.4)
+
+
+def test_hop_at_a_layer_change_clears_both_layers():
+    traj = MachineTrajectory(states=[
+        _state(0, 0, 0.2, 0, travel=True), _state(10, 0, 0.2, 0), _state(20, 0, 1.0, 0),
+        _state(0, 20, 0.4, 1, travel=True), _state(10, 20, 0.4, 1),
+    ])
+    gcode, _ = _gcode(traj, z_hop=0.4, min_retract_travel=1.5)
+    up = next(c for c in travel_runs(_body(parse(gcode)))[-1] if classify(c) == "zmove")
+    assert up.params["Z"] == pytest.approx(1.4)
