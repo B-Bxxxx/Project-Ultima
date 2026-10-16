@@ -488,6 +488,12 @@ class MainWindow(QMainWindow):
         f.addRow("End lift above part (mm):", self.park_spin)
         self.overlap_spin = self._dspin(0.15, 0.0, 0.5, 0.05)
         f.addRow("Infill overlap (x nozzle):", self.overlap_spin)
+        self.path_tol_spin = self._dspin(0.02, 0.0, 1.0, 0.01, 3)
+        f.addRow("Path tolerance walls (mm):", self.path_tol_spin)
+        self.infill_tol_spin = self._dspin(0.1, 0.0, 2.0, 0.05, 3)
+        f.addRow("Path tolerance infill (mm):", self.infill_tol_spin)
+        self.min_seg_spin = self._dspin(0.2, 0.0, 5.0, 0.05, 2)
+        f.addRow("Min. segment (mm):", self.min_seg_spin)
         self.thickness_combo = QComboBox()
         self.thickness_combo.addItems(["auto", "stage1", "nozzle_axis"])
         self.thickness_combo.setToolTip("auto: nozzle_axis on machines with rotary axes, stage1 on 3-axis machines")
@@ -1109,6 +1115,9 @@ class MainWindow(QMainWindow):
                 include_rotary_axes=mspec.has_rotary_axes,
                 park_lift=self.park_spin.value(),
                 infill_overlap=self.overlap_spin.value(),
+                path_tolerance=self.path_tol_spin.value(),
+                infill_path_tolerance=self.infill_tol_spin.value(),
+                min_segment_length=self.min_seg_spin.value(),
                 thickness_model=self._thickness_model(mspec),
                 z_hop=self.zhop_spin.value(),
                 hop_short_travels=self.hop_short_chk.isChecked(),

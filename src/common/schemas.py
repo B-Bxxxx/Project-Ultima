@@ -33,6 +33,10 @@ class MinimalPrintProfile(BaseModel):
     continuous_spiral: bool = Field(False, description="True if continuous single-wall spiral/vase mode")
     filament_diameter: float = Field(1.75, gt=0.0, description="Filament diameter in mm")
     max_segment_length: float = Field(1.0, gt=0.0, description="Maximum length of a segment for surface conformity")
+    path_tolerance: float = Field(0.02, ge=0.0, description="Walls and solid skin: a path point is dropped when the path moves by less than this (mm). 0 switches the simplification off.")
+    infill_path_tolerance: float = Field(0.1, ge=0.0, description="The same for sparse infill (inside the part, so it may be coarser).")
+    min_segment_length: float = Field(0.2, ge=0.0, description="Points next to segments shorter than this (mm) are merged while the path stays within 3x the tolerance (old 8/32-bit boards cannot plan very short segments). 0 = off.")
+    path_angle_tolerance_deg: float = Field(1.0, ge=0.0, description="A point is also kept when the tool axis (surface normal) would turn by more than this (deg) against the line that replaces it. 0 = ignore the normals.")
     include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
 
     # --- speeds (mm/min) ---

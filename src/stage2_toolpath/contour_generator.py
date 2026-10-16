@@ -29,6 +29,7 @@ import shapely.geometry as sg
 from shapely import affinity
 from shapely.errors import GEOSException
 from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -37,6 +38,7 @@ from src.common.schemas import (
     UniversalLayer, UniversalSlicedModel,
 )
 from src.stage2_toolpath.base import BaseToolpathGenerator
+from src.stage2_toolpath.simplify import simplify_path
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,10 @@ MIN_REGION_AREA_FACTOR = 0.25     # regions smaller than factor * nozzle^2 are n
 # A zigzag link may leave the region by at most this fraction of the line spacing.
 LINK_TOLERANCE_FACTOR = 0.1
 
+# Wall direction: every outer ring runs counter-clockwise and every hole clockwise (shapely orient sign=+1),
+# so the material is always on the left of the nozzle - in every layer and for every wall level.
+WALL_ORIENTATION = 1.0
+
 _EMPTY = sg.Polygon()
 
 
@@ -64,7 +70,7 @@ def _polygons_of(geom: Optional[BaseGeometry]) -> List[sg.Polygon]:
     if geom is None or geom.is_empty:
         return []
     if geom.geom_type == "Polygon":
-        return [geom]
+        return [orient(geom, WALL_ORIENTATION)]
     if hasattr(geom, "geoms"):
         parts: List[sg.Polygon] = []
         for g in geom.geoms:
@@ -173,7 +179,7 @@ def rings_to_polygons(contours: Sequence[SpatialContour], layer_index: Optional[
     for i in order:
         if depth[i] % 2 == 0:
             holes = [rings[k].exterior.coords for k in order if parent[k] == i and depth[k] % 2 == 1]
-            polygons.append(sg.Polygon(rings[i].exterior.coords, holes))
+            polygons.append(orient(sg.Polygon(rings[i].exterior.coords, holes), WALL_ORIENTATION))
     return polygons
 
 
@@ -432,6 +438,13 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     pts.append(pt_3d)
                     normals.append(norm)
                     thicknesses.append(thick)
+                tol = profile.infill_path_tolerance if f_type == "infill" else profile.path_tolerance
+                if tol > 0.0 and len(pts) > 2:
+                    keep, h_eff = simplify_path(pts, normals, thicknesses, tol, profile.min_segment_length,
+                                                profile.path_angle_tolerance_deg)
+                    pts = [pts[i] for i in keep]
+                    normals = [normals[i] for i in keep]
+                    thicknesses = [thicknesses[0]] + h_eff
                 contours.append(SpatialContour(points=pts, normals=normals,
                                                thicknesses=thicknesses, feature_type=f_type))
 

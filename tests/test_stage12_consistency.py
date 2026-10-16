@@ -137,7 +137,7 @@ def test_external_field_end_to_end_stage1_json_stage2(tmp_path):
     loaded = UniversalSlicedModel.from_json_file(str(path))
 
     profile = MinimalPrintProfile(layer_height=1.0, nozzle_diameter=0.4, num_perimeters=2,
-                                  infill_density=0.2)
+                                  infill_density=0.2, path_tolerance=0.0)      # dense points: the check samples the wall
     work = copy.deepcopy(loaded)
     traj = StandardToolpathGenerator().generate_toolpath(work, profile)
     assert len(traj.waypoints) > 100
