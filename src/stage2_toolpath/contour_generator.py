@@ -62,6 +62,42 @@ WALL_ORIENTATION = 1.0
 _EMPTY = sg.Polygon()
 
 
+def start_at_seam(coords: Sequence[Tuple[float, float]], angle_deg: Optional[float]) -> List[Tuple[float, float]]:
+    """
+    Rotates a closed ring so that it starts (and ends) at its seam: the point farthest in the direction
+    `angle_deg` (0 = +X, 90 = +Y, counter-clockwise). Every ring of every layer and wall level then starts
+    on the same side of the part, so the seam is one clean line. When a straight edge faces that direction
+    (several vertices tie) the seam is the middle of that edge - a vertex is inserted there. angle_deg=None
+    keeps the ring as it is.
+    """
+    pts = [tuple(c) for c in coords]
+    if angle_deg is None or len(pts) < 4:
+        return pts
+    ring = np.asarray(pts[:-1] if pts[0] == pts[-1] else pts, float)
+    d = np.array([math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))])
+    perp = np.array([-d[1], d[0]])
+    s = ring @ d
+    cand = np.flatnonzero(s >= s.max() - 1e-6)
+    if len(cand) == 1:
+        k = int(cand[0])
+    else:
+        t = ring[cand] @ perp
+        q = d * s.max() + perp * 0.5 * (t.min() + t.max())               # middle of the edge facing the seam
+        nxt = np.roll(ring, -1, axis=0)
+        ab = nxt - ring
+        u = np.clip(np.einsum("ij,ij->i", q - ring, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-18), 0.0, 1.0)
+        dist = np.linalg.norm(ring + u[:, None] * ab - q, axis=1)
+        e = int(np.argmin(dist))                                          # the segment e -> e+1 holds q
+        vert = np.flatnonzero(np.linalg.norm(ring - q, axis=1) < 1e-9)
+        if len(vert):
+            k = int(vert[0])
+        else:
+            ring = np.insert(ring, e + 1, q, axis=0)
+            k = e + 1
+    out = np.roll(ring, -k, axis=0)
+    return [tuple(map(float, p)) for p in out] + [tuple(map(float, out[0]))]
+
+
 # ----------------------------------------------------------------------------------------------
 # Shapely helpers
 # ----------------------------------------------------------------------------------------------
@@ -368,9 +404,9 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     if current.is_empty:
                         break
                     for cp in _polygons_of(current):
-                        group.append((level, list(cp.exterior.coords)))
+                        group.append((level, start_at_seam(cp.exterior.coords, profile.seam_angle_deg)))
                         for interior in cp.interiors:
-                            group.append((level, list(interior.coords)))
+                            group.append((level, start_at_seam(interior.coords, profile.seam_angle_deg)))
                     try:
                         current = current.buffer(-offset)
                     except GEOSException as exc:

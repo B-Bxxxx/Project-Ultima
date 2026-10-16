@@ -494,6 +494,9 @@ class MainWindow(QMainWindow):
         f.addRow("Path tolerance infill (mm):", self.infill_tol_spin)
         self.min_seg_spin = self._dspin(0.2, 0.0, 5.0, 0.05, 2)
         f.addRow("Min. segment (mm):", self.min_seg_spin)
+        self.seam_spin = self._dspin(90.0, -1.0, 360.0, 15.0, 0)
+        self.seam_spin.setSpecialValueText("off")            # -1 = keep the Stage 1 start points
+        f.addRow("Seam direction (deg, 90 = back):", self.seam_spin)
         self.thickness_combo = QComboBox()
         self.thickness_combo.addItems(["auto", "stage1", "nozzle_axis"])
         self.thickness_combo.setToolTip("auto: nozzle_axis on machines with rotary axes, stage1 on 3-axis machines")
@@ -1118,6 +1121,7 @@ class MainWindow(QMainWindow):
                 path_tolerance=self.path_tol_spin.value(),
                 infill_path_tolerance=self.infill_tol_spin.value(),
                 min_segment_length=self.min_seg_spin.value(),
+                seam_angle_deg=None if self.seam_spin.value() < 0 else self.seam_spin.value(),
                 thickness_model=self._thickness_model(mspec),
                 z_hop=self.zhop_spin.value(),
                 hop_short_travels=self.hop_short_chk.isChecked(),

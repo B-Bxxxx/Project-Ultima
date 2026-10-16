@@ -159,3 +159,40 @@ def test_input_ring_direction_does_not_matter():
     for ring in (ccw, ccw[::-1]):
         poly = rings_to_polygons([SpatialContour(points=ring, normals=[(0, 0, 1)] * 5, feature_type="boundary")], 0)[0]
         assert _signed_area(list(poly.exterior.coords)) > 0
+
+
+# --------------------------------------------------------------------------------------- seam
+def test_start_at_seam_picks_the_extreme_vertex_and_keeps_the_direction():
+    from src.stage2_toolpath.contour_generator import start_at_seam
+    sq = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]                       # CCW square
+    out = start_at_seam(sq, 90.0)                                           # +Y: the top edge faces it -> its middle, a vertex is inserted
+    assert out[0] == out[-1] and out[0] == pytest.approx((5.0, 10.0)) and len(out) == len(sq) + 1
+    assert _signed_area(out) > 0                                            # rotation does not change the direction
+    assert start_at_seam(sq, 0.0)[0] == pytest.approx((10.0, 5.0))
+    assert start_at_seam(sq, None) == [tuple(p) for p in sq]
+
+
+@pytest.mark.parametrize("name", ["Planar", "Wave", "Rounded ridge"])
+def test_every_wall_ring_starts_on_the_seam_side(name):
+    model = _model(name, _annulus(sections=96))
+    layers = StandardToolpathGenerator().generate_features(model, _profile(path_tolerance=0.0, seam_angle_deg=90.0))
+    n = 0
+    for L in layers[:len(layers) - 3]:                                      # not the grazing top layers (PITFALLS #42)
+        for c in L.contours:
+            if c.feature_type in ("outer_wall", "inner_wall"):
+                P = np.asarray(c.points)
+                assert P[0, 1] >= P[:, 1].max() - 0.1                       # starts at the back of its ring
+                assert abs(P[0, 0]) < 1.5                                   # ... on the same vertical line (x ~ 0)
+                n += 1
+    assert n > 20
+
+
+def test_seam_of_a_box_is_one_line_across_wall_levels():
+    import trimesh as tm
+    from src.stage1_slicer.plugins.field_slicer import UniversalFieldSlicerPlugin
+    mesh = tm.creation.box(extents=(20, 20, 4))
+    mesh.apply_translation([0, 0, 2])
+    model = UniversalFieldSlicerPlugin().slice(mesh, {"strategy": "planar", "layer_height": 1.0})
+    layers = StandardToolpathGenerator().generate_features(model, _profile(layer_height=1.0, path_tolerance=0.0))
+    starts = [c.points[0] for L in layers for c in L.contours if c.feature_type in ("outer_wall", "inner_wall")]
+    assert len(starts) >= 8 and all(abs(p[0]) < 0.1 for p in starts)           # all start at x = 0 on the back edge

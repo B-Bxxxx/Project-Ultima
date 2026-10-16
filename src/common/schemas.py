@@ -37,6 +37,7 @@ class MinimalPrintProfile(BaseModel):
     infill_path_tolerance: float = Field(0.1, ge=0.0, description="The same for sparse infill (inside the part, so it may be coarser).")
     min_segment_length: float = Field(0.2, ge=0.0, description="Points next to segments shorter than this (mm) are merged while the path stays within 3x the tolerance (old 8/32-bit boards cannot plan very short segments). 0 = off.")
     path_angle_tolerance_deg: float = Field(1.0, ge=0.0, description="A point is also kept when the tool axis (surface normal) would turn by more than this (deg) against the line that replaces it. 0 = ignore the normals.")
+    seam_angle_deg: Optional[float] = Field(90.0, description="Direction of the wall seam, seen from the part: every wall ring starts at its vertex farthest in this direction (0 = +X, 90 = +Y = back, counter-clockwise), so the seam is one line. None = keep the start point of the Stage 1 ring.")
     include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
 
     # --- speeds (mm/min) ---
