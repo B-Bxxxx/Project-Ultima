@@ -5,6 +5,10 @@ from src.common.schemas import SlicerPluginParameterSchema, UniversalLayer, Spat
 from src.stage1_slicer.base import BaseSlicerPlugin
 from src.stage1_slicer.registry import PluginRegistry
 from src.stage1_slicer.math_strategies import build_strategy
+from src.common.simplify import simplify_ring
+
+MIN_CONTOUR_LENGTH = 0.05      # mm: shorter traced contours are numerical debris
+
 
 @PluginRegistry.register("universal_field_slicer")
 class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
@@ -65,6 +69,9 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
         metadata["strategy"] = strategy_name
         metadata.update(strategy.get_resolved_params())
 
+        # raw contours follow the (possibly very fine) mesh; drop points that move the outline < tol (mm)
+        # (external_field: Stage 2 rebuilds f from these contour points, so they must stay dense -> default off)
+        tol = float(parameters.get("contour_tolerance", 0.0 if strategy_name == "external_field" else 0.005))
         layers = []
 
         # 1. Forward Mapping (Deform Mesh)
@@ -83,36 +90,35 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
 
             # Extract raw contours from intersection segments
             contours = self._process_trimesh_segments_to_contours(path_2d)
+            # a plane that grazes a vertex leaves micro loops (a few microns long) - no material in them
+            contours = [c for c in contours if self._path_length(c.points) >= MIN_CONTOUR_LENGTH]
 
             if contours:
                 # Store default normals on the raw boundary contour so Stage 1 tests continue passing
                 # (Stage 2 will evaluate the true normals for perimeter/infill generation anyway)
                 for contour in contours:
-                    undeformed_normals = []
-                    undeformed_pts = []
-                    thicknesses = []
-                    vgaps, ngaps = [], []
-                    for pt in contour.points:
-                        u_pt = strategy.undeform_point(pt, layer_idx)
-                        norm = strategy.compute_normal(u_pt, layer_idx)
-                        thick = strategy.compute_thickness(u_pt, layer_idx)
-                        undeformed_pts.append(u_pt)
-                        undeformed_normals.append(norm)
-                        thicknesses.append(thick)
-                        vg, ng = strategy.layer_gaps(u_pt[0], u_pt[1], layer_idx)
-                        vgaps.append(vg)
-                        ngaps.append(ng)
-                    contour.points = undeformed_pts
-                    contour.normals = undeformed_normals
-                    contour.thicknesses = thicknesses
-                    contour.vertical_gaps = vgaps
-                    contour.normal_gaps = ngaps
+                    pts_d = np.asarray(contour.points, float)
+                    undeformed = strategy.undeform_points(pts_d, layer_idx)
+                    if tol > 0.0:                                 # simplify the REAL 3D outline
+                        undeformed = simplify_ring(undeformed, tol)
+                    xy = undeformed[:, :2]
+                    contour.points = [tuple(map(float, p)) for p in undeformed]
+                    contour.normals = [tuple(map(float, n)) for n in strategy.normals_at(undeformed, layer_idx)]
+                    contour.thicknesses = [float(t) for t in strategy.thicknesses_at(undeformed, layer_idx)]
+                    vg, ng = strategy.layer_gaps_batch(xy, layer_idx)
+                    contour.vertical_gaps = [float(v) for v in vg]
+                    contour.normal_gaps = [float(v) for v in ng]
                     contour.feature_type = "boundary"
 
                 z_nominal = plane_origin[2]
                 layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, contours=contours))
 
         return UniversalSlicedModel(layers=layers, metadata=metadata)
+
+    @staticmethod
+    def _path_length(points) -> float:
+        P = np.asarray(points, float)
+        return float(np.linalg.norm(np.diff(P, axis=0), axis=1).sum()) if len(P) > 1 else 0.0
 
     def _process_trimesh_segments_to_contours(self, segments: np.ndarray, default_normal: List[float] = [0, 0, 1]) -> List[SpatialContour]:
         """

@@ -461,19 +461,15 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 for i in range(1, len(coords)):
                     subdivided.extend(self._subdivide_segment(subdivided[-1], coords[i], profile.max_segment_length))
 
-                pts, normals, thicknesses = [], [], []
-                for x, y in subdivided:
-                    if strategy:
-                        pt_3d = strategy.project_to_layer(x, y, _idx)
-                        norm = strategy.compute_normal(pt_3d, _idx)
-                        thick = strategy.compute_thickness(pt_3d, _idx)
-                    else:
-                        pt_3d = (x, y, _layer.z_height)
-                        norm = (0.0, 0.0, 1.0)
-                        thick = profile.layer_height
-                    pts.append(pt_3d)
-                    normals.append(norm)
-                    thicknesses.append(thick)
+                if strategy:
+                    arr = strategy.project_points(subdivided, _idx)
+                    pts = [tuple(map(float, p)) for p in arr]
+                    normals = [tuple(map(float, n)) for n in strategy.normals_at(arr, _idx)]
+                    thicknesses = [float(t) for t in strategy.thicknesses_at(arr, _idx)]
+                else:
+                    pts = [(x, y, _layer.z_height) for x, y in subdivided]
+                    normals = [(0.0, 0.0, 1.0)] * len(pts)
+                    thicknesses = [profile.layer_height] * len(pts)
                 tol = profile.infill_path_tolerance if f_type == "infill" else profile.path_tolerance
                 if tol > 0.0 and len(pts) > 2:
                     keep, h_eff = simplify_path(pts, normals, thicknesses, tol, profile.min_segment_length,

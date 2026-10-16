@@ -49,7 +49,7 @@ def _part(shift=(0.0, 0.0)):
 
 def _slice(name, shift):
     p = FUNCS[name].to_slicer_params({})
-    p.update({"layer_height": 0.4, "transition_height": 6.0})
+    p.update({"layer_height": 0.4, "transition_height": 6.0, "contour_tolerance": 0.0})   # geometry test: no simplification
     model = PluginRegistry.get_plugin("universal_field_slicer")().slice(_part(shift), p)
     prof = MinimalPrintProfile(layer_height=0.4, nozzle_diameter=0.4, num_perimeters=1, infill_density=0.3,
                                bottom_solid_layers=1, top_solid_layers=1, path_tolerance=0.0)   # geometry test: no simplification

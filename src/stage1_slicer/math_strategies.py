@@ -165,6 +165,41 @@ class BaseSlicingStrategy(ABC):
         vertical = float(z1 - z0)
         return vertical, float(vertical / np.sqrt(1.0 + dzdx * dzdx + dzdy * dzdy))
 
+    # -- batch (vectorized) interface ------------------------------------------------------
+    # Stage 1 / Stage 2 evaluate whole contours at once. The defaults loop over the scalar methods
+    # (correct for every strategy); the field strategies override them with numpy versions.
+    def project_points(self, xy, layer_idx: int) -> np.ndarray:
+        """(N, 2) bed XY -> (N, 3) true 3D positions on layer `layer_idx` (= project_to_layer per point)."""
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        return np.array([self.project_to_layer(float(x), float(y), layer_idx) for x, y in xy], float).reshape(-1, 3)
+
+    def undeform_points(self, pts, layer_idx: int) -> np.ndarray:
+        """(N, 3) points of the DEFORMED space (x, y, z') -> (N, 3) real positions (= undeform_point per point)."""
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        return np.array([self.undeform_point(tuple(p), layer_idx) for p in pts], float).reshape(-1, 3)
+
+    def normals_at(self, pts, layer_idx: int) -> np.ndarray:
+        """(N, 3) points -> (N, 3) unit tool normals (= compute_normal per point)."""
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        return np.array([self.compute_normal(tuple(p), layer_idx) for p in pts], float).reshape(-1, 3)
+
+    def thicknesses_at(self, pts, layer_idx: int) -> np.ndarray:
+        """(N, 3) points -> (N,) local layer thickness (= compute_thickness per point)."""
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        return np.array([self.compute_thickness(tuple(p), layer_idx) for p in pts], float)
+
+    def layer_gaps_batch(self, xy, layer_idx: int, eps: float = 1e-4) -> Tuple[np.ndarray, np.ndarray]:
+        """(vertical gaps, normal gaps) for (N, 2) points - same definition as layer_gaps."""
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        z0 = self.project_points(xy, layer_idx)[:, 2]
+        z1 = self.project_points(xy, layer_idx + 1)[:, 2]
+        ex = np.array([eps, 0.0])
+        ey = np.array([0.0, eps])
+        dzdx = (self.project_points(xy + ex, layer_idx)[:, 2] - self.project_points(xy - ex, layer_idx)[:, 2]) / (2 * eps)
+        dzdy = (self.project_points(xy + ey, layer_idx)[:, 2] - self.project_points(xy - ey, layer_idx)[:, 2]) / (2 * eps)
+        vertical = z1 - z0
+        return vertical, vertical / np.sqrt(1.0 + dzdx * dzdx + dzdy * dzdy)
+
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
         """Computes local layer thickness (adaptive). Defaults to nominal layer_height."""
         return getattr(self, "layer_height", 0.2)
@@ -449,8 +484,14 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
 
         # Precompute deformed mesh (refined first, a coarse mesh would deform only at its corners)
         if params.get("refine_mesh", True) and len(self.mesh.vertices) > 0:
-            wavelength = params.get("feature_scale", self.mesh.extents.max() if self.mesh.extents is not None else 10.0)
-            self._refine_mesh(max_edge=wavelength * params.get("refine_fraction", 1.0 / 8.0))
+            if "feature_scale" in params or "refine_fraction" in params:
+                # legacy: uniform split to (feature_scale * refine_fraction)
+                wavelength = params.get("feature_scale", self.mesh.extents.max() if self.mesh.extents is not None else 10.0)
+                self._refine_mesh(max_edge=wavelength * params.get("refine_fraction", 1.0 / 8.0))
+            else:
+                self._refine_adaptive(params, float(params.get("refine_tolerance", 0.02)),
+                                      float(params.get("refine_min_edge", 0.25)),
+                                      int(params.get("refine_max_faces", 400_000)))
         else:
             self.deformed = self.mesh.copy()
         self.start_z = self._first_layer_z(params, self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
@@ -465,6 +506,28 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
             end_z = params.get("end_z", 10.0)
         self.end_z = end_z
         self.num_layers = self._count_layers(self.start_z, end_z, self.layer_height)
+
+    def _deformed_z(self, P: np.ndarray) -> np.ndarray:
+        """z' of the points P (n, 3) - the deformed height used for slicing."""
+        f = np.broadcast_to(self._evaluate(P[:, 0], P[:, 1]), (len(P),))
+        return self._solve_forward_z(P[:, 2], f)
+
+    def _edge_error(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        """Deviation (mm) of the true deformed height from the straight line between the deformed end points."""
+        za, zb = self._deformed_z(A), self._deformed_z(B)
+        err = np.zeros(len(A))
+        for t in (0.25, 0.5, 0.75):
+            err = np.maximum(err, np.abs(self._deformed_z(A + t * (B - A)) - ((1 - t) * za + t * zb)))
+        return err
+
+    def _refine_adaptive(self, params: Dict[str, Any], tol: float, min_edge: float, max_faces: int) -> None:
+        """Splits only the edges along which the deformation is not (almost) linear - see mesh_refine.py."""
+        from src.stage1_slicer.mesh_refine import refine_adaptive
+        self.start_z = self._first_layer_z(params, float(self.mesh.bounds[0, 2]))     # w(z') depends on it
+        v, f = refine_adaptive(self.mesh.vertices, self.mesh.faces, self._edge_error, tol, min_edge, max_faces)
+        self.mesh = trimesh.Trimesh(vertices=v, faces=f, process=False)
+        self.deformed = self.mesh.copy()
+        logger.info("adaptive refinement: %d faces (tol %.3g mm, min edge %.3g mm)", len(f), tol, min_edge)
 
     def _setup_field(self, params: Dict[str, Any]) -> None:
         self.expr = params.get("expression", "0.0")
@@ -524,6 +587,43 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         norm_vec = np.array([df_dx, df_dy, 1.0])
         norm_vec /= np.linalg.norm(norm_vec)
         return (float(norm_vec[0]), float(norm_vec[1]), float(norm_vec[2]))
+
+    # vectorized versions of undeform_point / compute_normal / compute_thickness (same maths)
+    def project_points(self, xy, layer_idx: int) -> np.ndarray:
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        zp = self.start_z + layer_idx * self.layer_height
+        w = self.get_blend_weight(zp)
+        z = zp - w * np.broadcast_to(self._evaluate(xy[:, 0], xy[:, 1]), (len(xy),))
+        return np.column_stack([xy[:, 0], xy[:, 1], z])
+
+    def undeform_points(self, pts, layer_idx: int) -> np.ndarray:
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        if self.transition_height <= 0.0:
+            w = np.ones(len(pts))
+        else:
+            w = np.clip((pts[:, 2] - getattr(self, "start_z", 0.0)) / self.transition_height, 0.0, 1.0)
+        f = np.broadcast_to(self._evaluate(pts[:, 0], pts[:, 1]), (len(pts),))
+        return np.column_stack([pts[:, 0], pts[:, 1], pts[:, 2] - w * f])
+
+    def normals_at(self, pts, layer_idx: int) -> np.ndarray:
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        w = self.get_blend_weight(self.start_z + layer_idx * self.layer_height)
+        eps = 1e-5
+        x, y = pts[:, 0], pts[:, 1]
+        ev = lambda a, b: np.broadcast_to(self._evaluate(a, b), (len(pts),))
+        f0 = ev(x, y)
+        dfx = w * (ev(x + eps, y) - f0) / eps
+        dfy = w * (ev(x, y + eps) - f0) / eps
+        n = np.column_stack([dfx, dfy, np.ones(len(pts))])
+        return n / np.linalg.norm(n, axis=1, keepdims=True)
+
+    def thicknesses_at(self, pts, layer_idx: int) -> np.ndarray:
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        zp = self.start_z + layer_idx * self.layer_height
+        if self.transition_height <= 0.0 or zp > self.start_z + self.transition_height:
+            return np.full(len(pts), float(self.layer_height))
+        f = np.broadcast_to(self._evaluate(pts[:, 0], pts[:, 1]), (len(pts),))
+        return np.maximum(0.01, self.layer_height * (1.0 - f / self.transition_height))
 
     def compute_thickness(self, undeformed_pt: Tuple[float, float, float], layer_idx: int) -> float:
         x, y, z = undeformed_pt

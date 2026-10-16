@@ -78,9 +78,9 @@ def test_a_turning_tool_axis_keeps_points():
 
 
 # ------------------------------------------------------------------------------- integration
-def _model(name, mesh, h=0.4):
+def _model(name, mesh, h=0.4, **extra):
     p = FUNCS[name].to_slicer_params({})
-    p.update({"layer_height": h, "transition_height": 6.0})
+    p.update({"layer_height": h, "transition_height": 6.0, "contour_tolerance": 0.0, **extra})   # Stage 2 test: dense Stage 1 input
     return PluginRegistry.get_plugin("universal_field_slicer")().slice(mesh, p)
 
 
