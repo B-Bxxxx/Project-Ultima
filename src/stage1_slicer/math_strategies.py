@@ -12,6 +12,21 @@ class BaseSlicingStrategy(ABC):
     def __init__(self, params: Dict[str, Any] = None):
         if params is None: params = {}
         self.transition_height = params.get("transition_height", 0.0)
+        # Function origin (x, y): the functions are written relative to the CENTRE of the part's footprint, so
+        # moving the part on the bed does not change the slice. Stage 2 gets the resolved value back through
+        # the metadata.
+        self.origin_x = float(params.get("origin_x", 0.0) or 0.0)
+        self.origin_y = float(params.get("origin_y", 0.0) or 0.0)
+
+    def _set_origin(self, params: Dict[str, Any], mesh: trimesh.Trimesh) -> None:
+        """Explicit origin_x / origin_y win (Stage 2 rebuild); otherwise the centre of the mesh's XY bounding box."""
+        if params.get("origin_x") is not None and params.get("origin_y") is not None:
+            self.origin_x, self.origin_y = float(params["origin_x"]), float(params["origin_y"])
+        elif mesh is not None and len(mesh.vertices) > 0:
+            b = mesh.bounds
+            self.origin_x, self.origin_y = float((b[0, 0] + b[1, 0]) / 2.0), float((b[0, 1] + b[1, 1]) / 2.0)
+        else:
+            self.origin_x, self.origin_y = 0.0, 0.0
 
     # -- layer grid ------------------------------------------------------------------------
     # (self.start_z is z' of layer 0; the parameter 'start_z' is the base, one layer lower.)
@@ -120,6 +135,8 @@ class BaseSlicingStrategy(ABC):
             # base of the print (the first layer is printed at start_z + layer_height)
             "start_z": float(getattr(self, "start_z", 0.0)) - float(getattr(self, "layer_height", 0.2)),
             "end_z": float(getattr(self, "end_z", 0.0)),
+            "origin_x": float(self.origin_x),
+            "origin_y": float(self.origin_y),
         }
 
     def project_to_layer(self, x: float, y: float, layer_idx: int) -> Tuple[float, float, float]:
@@ -329,6 +346,7 @@ class ConicalStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
         super().__init__(params)
         self.mesh = mesh.copy()
+        self._set_origin(params, self.mesh)
         self.layer_height = params.get("layer_height", 0.2)
         self.cone_angle = np.radians(params.get("cone_angle_deg", 15.0))
         self.tan_alpha = np.tan(self.cone_angle)
@@ -341,7 +359,7 @@ class ConicalStrategy(BaseSlicingStrategy):
             self.deformed = self.mesh.copy()
         self.start_z = self._first_layer_z(params, self.deformed.bounds[0, 2] if len(self.deformed.vertices) > 0 else 0.0)
         if len(self.deformed.vertices) > 0:
-            r = np.linalg.norm(self.deformed.vertices[:, :2], axis=1)
+            r = np.hypot(self.deformed.vertices[:, 0] - self.origin_x, self.deformed.vertices[:, 1] - self.origin_y)
             f_val = r * self.tan_alpha
             self.deformed.vertices[:, 2] = self._solve_forward_z(self.deformed.vertices[:, 2], f_val)
             end_z = params.get("end_z", self.deformed.bounds[1, 2])
@@ -368,7 +386,7 @@ class ConicalStrategy(BaseSlicingStrategy):
 
     def undeform_point(self, pt: Tuple[float, float, float], layer_idx: int):
         x, y, zp = pt
-        rad = np.sqrt(x**2 + y**2)
+        rad = np.hypot(x - self.origin_x, y - self.origin_y)
 
         w = self.get_blend_weight(zp)
         # Undoing the deformation: If w=1, subtract r*tan_alpha
@@ -384,10 +402,11 @@ class ConicalStrategy(BaseSlicingStrategy):
         zp = self.start_z + layer_idx * self.layer_height
         w = self.get_blend_weight(zp)
 
-        rad = np.sqrt(x**2 + y**2)
+        dx, dy = x - self.origin_x, y - self.origin_y
+        rad = np.hypot(dx, dy)
         if rad > 1e-6:
-            df_dx = w * (x / rad) * self.tan_alpha
-            df_dy = w * (y / rad) * self.tan_alpha
+            df_dx = w * (dx / rad) * self.tan_alpha
+            df_dy = w * (dy / rad) * self.tan_alpha
         else:
             df_dx = 0.0
             df_dy = 0.0
@@ -409,7 +428,7 @@ class ConicalStrategy(BaseSlicingStrategy):
         # dz/dz' = 1 - dw/dz' * f(x, y)
         # where w(z') = (z' - start_z) / transition_height  =>  dw/dz' = 1 / transition_height
 
-        rad = np.sqrt(x**2 + y**2)
+        rad = np.hypot(x - self.origin_x, y - self.origin_y)
         f_val = rad * self.tan_alpha
 
         dw_dzp = 1.0 / self.transition_height
@@ -424,6 +443,7 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
     def __init__(self, mesh: trimesh.Trimesh, params: Dict[str, Any]):
         super().__init__(params)
         self.mesh = mesh.copy()
+        self._set_origin(params, self.mesh)
         self.layer_height = params.get("layer_height", 0.2)
         self._setup_field(params)
 
@@ -464,6 +484,9 @@ class CustomExpressionStrategy(BaseSlicingStrategy):
         return resolved
 
     def _evaluate(self, x, y):
+        # x, y are bed coordinates; the expression sees them relative to the part's centre (function origin)
+        x = np.asarray(x, float) - self.origin_x
+        y = np.asarray(y, float) - self.origin_y
         r = np.sqrt(x**2 + y**2)
         # Vectorized evaluation of the validated, pre-compiled expression
         return evaluate_compiled(self._code, x, y, r, self.expr_params)
@@ -523,7 +546,7 @@ class GridFieldStrategy(CustomExpressionStrategy):
         self.expr_params = {}
 
     def _evaluate(self, x, y):
-        return self.field.evaluate(x, y)
+        return self.field.evaluate(np.asarray(x, float) - self.origin_x, np.asarray(y, float) - self.origin_y)
 
 
 class ExternalScalarFieldStrategy(BaseSlicingStrategy):

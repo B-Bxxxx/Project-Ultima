@@ -1,8 +1,8 @@
 """
 Stage 0 function import: user-supplied deformation functions f(x, y).
 
-Coordinate reference (decision D4): x, y are the coordinates of the part AS PLACED ON THE BED
-(after the placement step), z is not an argument. The sliced layers follow z = z0 - w(z)*f(x, y)
+Coordinate reference (decision D4, revised): x, y are relative to the CENTRE of the part's footprint
+(bounding-box centre of the placed mesh; the strategies subtract origin_x / origin_y), z is not an argument. The sliced layers follow z = z0 - w(z)*f(x, y)
 (w = transition blend), i.e. a positive f lowers the layer surface.
 
 A. Expression file   - text (one expression, '#'/'//' comment lines ignored, lines are joined) or
@@ -202,16 +202,17 @@ def load_data_file(path: str, resolution: int = DEFAULT_GRID_RESOLUTION) -> Grid
 
 
 # ---------------------------------------------------------------------------------- preview
-def preview_surface(field, bounds_xy: Sequence[float], n: int = 40):
+def preview_surface(field, bounds_xy: Sequence[float], n: int = 40, origin: Sequence[float] = (0.0, 0.0)):
     """
     Samples `field` (anything with evaluate(x, y)) on an n x n grid over (x0, x1, y0, y1).
-    Returns xs, ys, Z[(ny, nx)], (zmin, zmax) - used by the Stage 0 preview.
+    Returns xs, ys, Z[(ny, nx)], (zmin, zmax) - used by the Stage 0 preview. `origin` is the function origin
+    (centre of the part): the field is evaluated at (x - origin_x, y - origin_y).
     """
     x0, x1, y0, y1 = bounds_xy
     xs = np.linspace(x0, x1, n)
     ys = np.linspace(y0, y1, n)
     gx, gy = np.meshgrid(xs, ys)
-    z = np.asarray(field.evaluate(gx, gy), float)
+    z = np.asarray(field.evaluate(gx - origin[0], gy - origin[1]), float)
     if z.shape != gx.shape:                              # constant expression like "0.5"
         z = np.full(gx.shape, float(z))
     return xs, ys, z, (float(z.min()), float(z.max()))

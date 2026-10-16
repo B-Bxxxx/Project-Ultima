@@ -39,7 +39,7 @@ Problems and traps met while building the pipeline - raw material for the docume
 |---|---------|--------|-------|
 | 20 | Expressions come from files: never `eval` blindly (AGENTS.md rule 5). | fixed | AST whitelist; user parameters must be plain identifiers that shadow nothing. |
 | 21 | **Silent defaults hide mistakes.** A function that needs a parameter it does not declare, or a machine with rotary axes but no limits, is an error. | by design | `FunctionFileError` / `MachineFileError` name the missing element. |
-| 22 | **Coordinate reference of f(x, y).** Which x, y does the function see? | decided | The placed part on the bed. Re-check when 5-axis work starts. |
+| 22 | **Coordinate reference of f(x, y).** Which x, y does the function see? | decided | The centre of the part's footprint (bbox centre; was: the part as placed on the bed, changed because moving the part changed the slice). `origin_x/origin_y` are resolved in Stage 1 and travel in the metadata. The infill lattice is still anchored to the bed grid. Re-check when 5-axis work starts. |
 | 23 | Rotary kinematics are not validated (first tests are 3-axis). | open | Tool-axis alignment is recorded per state (`tool_alignment`) for later checks. |
 
 ## GUI
@@ -63,8 +63,10 @@ Problems and traps met while building the pipeline - raw material for the docume
 | 39 | The 3-axis tilt warning (`max_3axis_tilt_deg`) goes to the logger only - the GUI user never sees it, steep templates (k = 0.5 is 27 deg) can pass silently. | open | Show it in the status / metrics line. |
 | 40 | Default layer height 0.4 on a 0.4 nozzle is above the 0.8 x nozzle window; with any function the advice flags it. | open | Lower the GUI default (0.2) or keep and explain. |
 | 41 | Real layer spacing and extrusion thickness are computed for the vertical direction only; on steep flanks the thickness along the normal is smaller by cos(slope). | open | Decide with the first test prints (material excess is deferred). |
+| 42 | **Top layers are ill-conditioned.** The last 2-3 layers cut the deformed top cap at a grazing angle, so float noise alone moves the contour by 0.04-0.2 mm (the same slice shifted by 150 mm differs only there); the function-origin tests skip the top 3 layers. | open | Likely cause of the zig-zag top layer; to be measured and fixed. |
 
 * The thickness check is estimated (vertical and normal gap to the next layer, per Stage 1 point). The exact gap along the nozzle (normal / tool alignment) needs Stage 3 and is not checked yet; with a default layer height of 0.4 on a 0.4 nozzle the check fails by design (window 0.10 .. 0.32).
+
 
 ## Process
 * A long single prompt overwhelms an assistant; split into small, verifiable tasks.

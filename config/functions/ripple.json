@@ -2,7 +2,7 @@
   "format": "cam-function",
   "version": 2,
   "name": "Ripple",
-  "description": "Concentric waves around x = y = 0: z = z0 - a*sin(r/b). Wavelength = 2*pi*b.",
+  "description": "Concentric waves around the centre of the part: z = z0 - a*sin(r/b). Wavelength = 2*pi*b.",
   "expression": "a * np.sin(r / b)",
   "parameters": {
     "a": {

@@ -429,7 +429,7 @@ class MainWindow(QMainWindow):
         self.chk_field_preview = QCheckBox("Preview layer surface in Stage 0")
         self.chk_field_preview.stateChanged.connect(self.update_viewport)
         f.addRow(self.chk_field_preview)
-        note = QLabel("x, y = coordinates of the PLACED part on the bed; layers follow z = z0 - f(x, y).")
+        note = QLabel("x, y = coordinates relative to the CENTRE of the part (moving the part does not change the slice); layers follow z = z0 - f(x, y).")
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {gui_theme.MUTED};")
         f.addRow(note)
@@ -950,7 +950,8 @@ class MainWindow(QMainWindow):
         if field is None or self.mesh is None:
             return None
         b = self.mesh.bounds
-        xs, ys, z, (zlo, zhi) = preview_surface(field, (b[0, 0], b[1, 0], b[0, 1], b[1, 1]), 40)
+        origin = ((b[0, 0] + b[1, 0]) / 2.0, (b[0, 1] + b[1, 1]) / 2.0)          # function origin = centre of the part
+        xs, ys, z, (zlo, zhi) = preview_surface(field, (b[0, 0], b[1, 0], b[0, 1], b[1, 1]), 40, origin)
         base = float(b[0, 2]) + self.trans_height_spin.value()
         t = (z - zlo) / (zhi - zlo) if zhi > zlo else np.zeros_like(z)
         colors = np.zeros(z.shape + (4,))

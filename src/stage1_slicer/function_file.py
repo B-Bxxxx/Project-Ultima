@@ -22,7 +22,7 @@ Exactly ONE of these defines the layer surfaces:
 Nothing is predefined: every parameter a function uses must be declared in "parameters" (the GUI
 shows one named input field per declared parameter) and a missing one is an error. Expressions are
 validated by the AST whitelist in safe_expr.py.
-Coordinates: x, y are those of the part as placed on the bed.
+Coordinates: x, y are relative to the centre of the part's footprint (bounding-box centre), so the slice does not depend on where the part sits on the bed.
 """
 import json
 import os

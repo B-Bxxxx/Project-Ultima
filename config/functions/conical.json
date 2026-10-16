@@ -2,7 +2,7 @@
   "format": "cam-function",
   "version": 2,
   "name": "Conical",
-  "description": "Layers rise with the distance from the origin: z = z0 - r*tan(angle). Needs the part around x = y = 0 (or set the origin by placement).",
+  "description": "Layers rise with the distance from the origin: z = z0 - r*tan(angle). The origin is the centre of the part.",
   "expression": "r * tan(radians(cone_angle_deg))",
   "parameters": {
     "cone_angle_deg": {

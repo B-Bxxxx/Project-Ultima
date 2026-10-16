@@ -2,7 +2,7 @@
   "format": "cam-function",
   "version": 2,
   "name": "Dome (button)",
-  "description": "Layers follow a spherical cap around x = y = 0, like the top of a button. A smaller sphere radius gives a steeper dome; the sphere must be larger than the part radius.",
+  "description": "Layers follow a spherical cap around the centre of the part, like the top of a button. A smaller sphere radius gives a steeper dome; the sphere must be larger than the part radius.",
   "expression": "Rs - np.sqrt(np.maximum(Rs**2 - r**2, 0.0))",
   "parameters": {
     "Rs": {
