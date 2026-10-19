@@ -59,6 +59,15 @@ class BaseSlicingStrategy(ABC):
         """Deforms the mesh vertices for slicing."""
         pass
 
+    # -- per-layer slicing hooks (Stage 1). Defaults: every layer slices the deformed mesh, unclipped. --------
+    def slice_source(self, layer_idx: int) -> trimesh.Trimesh:
+        """The mesh whose section with `get_slice_plane(layer_idx)` gives the contours of the layer."""
+        return self.deform_mesh()
+
+    def layer_region(self, layer_idx: int):
+        """Optional shapely region (bed XY) the contours of the layer are clipped to; None = no clipping."""
+        return None
+
     def get_blend_weight(self, z_val: float) -> float:
         """Calculates vertical blending weight for transition zones (0 to 1)."""
         if self.transition_height <= 0.0:
@@ -738,6 +747,14 @@ class ExternalScalarFieldStrategy(BaseSlicingStrategy):
 
 def build_strategy(name: str, mesh: trimesh.Trimesh, params: Dict[str, Any]) -> BaseSlicingStrategy:
     """Single factory used by Stage 1 (real mesh) and Stage 2 (empty mesh)."""
+    mode = params.get("transition_mode", "linear")
+    if mode not in ("linear", "ramp"):
+        raise ValueError(f"Unknown transition_mode: {mode!r} (expected 'linear' or 'ramp')")
+    if mode == "ramp":
+        if name not in ("custom_expr", "grid_field"):
+            raise ValueError("transition_mode 'ramp' is only available for expression / data-file functions")
+        from src.stage1_slicer.ramp_strategy import RampCustomExpressionStrategy, RampGridFieldStrategy
+        return (RampCustomExpressionStrategy if name == "custom_expr" else RampGridFieldStrategy)(mesh, params)
     if name == "planar":
         return PlanarStrategy(mesh, params)
     if name == "progressive_tilt":

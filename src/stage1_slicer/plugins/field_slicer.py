@@ -10,6 +10,7 @@ from src.stage1_slicer.math_strategies import build_strategy
 from src.common.simplify import simplify_ring
 
 JOIN_TOLERANCE = 0.01          # mm: open ends this close are the same point (sliver triangles)
+MIN_CLIP_AREA = 0.01             # mm2: smaller clipped pieces are not printable
 MIN_CONTOUR_LENGTH = 0.05      # mm: shorter traced contours are numerical debris
 
 
@@ -77,8 +78,6 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
         tol = float(parameters.get("contour_tolerance", 0.0 if strategy_name == "external_field" else 0.005))
         layers = []
 
-        # 1. Forward Mapping (Deform Mesh)
-        deformed_mesh = strategy.deform_mesh()
 
         # 2. Slice Mesh
         num_layers = strategy.get_layer_count()
@@ -86,7 +85,7 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
             plane_origin, plane_normal = strategy.get_slice_plane(layer_idx)
 
             # Slice the deformed mesh
-            path_2d = trimesh.intersections.mesh_plane(deformed_mesh, plane_normal, plane_origin)
+            path_2d = trimesh.intersections.mesh_plane(strategy.slice_source(layer_idx), plane_normal, plane_origin)
 
             if path_2d is None or len(path_2d) == 0:
                 continue
@@ -95,6 +94,11 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
             contours = self._process_trimesh_segments_to_contours(path_2d)
             # a plane that grazes a vertex leaves micro loops (a few microns long) - no material in them
             contours = [c for c in contours if self._path_length(c.points) >= MIN_CONTOUR_LENGTH]
+            region = strategy.layer_region(layer_idx)
+            if region is not None:                      # e.g. the partial base layers of the ramp transition mode
+                contours = self._clip_contours(contours, region, plane_origin[2], layer_idx)
+                if not contours:
+                    continue
 
             if contours:
                 # Store default normals on the raw boundary contour so Stage 1 tests continue passing
@@ -117,6 +121,22 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                 layers.append(UniversalLayer(layer_index=layer_idx, z_height=z_nominal, contours=contours))
 
         return UniversalSlicedModel(layers=layers, metadata=metadata)
+
+    @staticmethod
+    def _clip_contours(contours: List[SpatialContour], region, z: float, layer_idx: int) -> List[SpatialContour]:
+        """Intersects the closed rings of a layer with a shapely region; returns the outline rings (holes included)."""
+        from src.stage2_toolpath.contour_generator import rings_to_polygons     # pure function, shared nesting logic
+        out: List[SpatialContour] = []
+        for poly in rings_to_polygons(contours, layer_idx):
+            part = poly.intersection(region)
+            geoms = getattr(part, "geoms", [part])
+            for g in geoms:
+                if g.geom_type != "Polygon" or g.area < MIN_CLIP_AREA:
+                    continue
+                for ring in [g.exterior, *g.interiors]:
+                    pts = [(float(x), float(y), float(z)) for x, y in ring.coords]
+                    out.append(SpatialContour(points=pts, normals=[(0.0, 0.0, 1.0)] * len(pts)))
+        return out
 
     @staticmethod
     def _path_length(points) -> float:
