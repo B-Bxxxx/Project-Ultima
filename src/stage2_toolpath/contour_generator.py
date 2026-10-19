@@ -29,6 +29,7 @@ import shapely.geometry as sg
 from shapely import affinity
 from shapely.errors import GEOSException
 from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -37,6 +38,7 @@ from src.common.schemas import (
     UniversalLayer, UniversalSlicedModel,
 )
 from src.stage2_toolpath.base import BaseToolpathGenerator
+from src.stage2_toolpath.simplify import simplify_path
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +55,47 @@ MIN_REGION_AREA_FACTOR = 0.25     # regions smaller than factor * nozzle^2 are n
 # A zigzag link may leave the region by at most this fraction of the line spacing.
 LINK_TOLERANCE_FACTOR = 0.1
 
+# Wall direction: every outer ring runs counter-clockwise and every hole clockwise (shapely orient sign=+1),
+# so the material is always on the left of the nozzle - in every layer and for every wall level.
+WALL_ORIENTATION = 1.0
+
 _EMPTY = sg.Polygon()
+
+
+def start_at_seam(coords: Sequence[Tuple[float, float]], angle_deg: Optional[float]) -> List[Tuple[float, float]]:
+    """
+    Rotates a closed ring so that it starts (and ends) at its seam: the point farthest in the direction
+    `angle_deg` (0 = +X, 90 = +Y, counter-clockwise). Every ring of every layer and wall level then starts
+    on the same side of the part, so the seam is one clean line. When a straight edge faces that direction
+    (several vertices tie) the seam is the middle of that edge - a vertex is inserted there. angle_deg=None
+    keeps the ring as it is.
+    """
+    pts = [tuple(c) for c in coords]
+    if angle_deg is None or len(pts) < 4:
+        return pts
+    ring = np.asarray(pts[:-1] if pts[0] == pts[-1] else pts, float)
+    d = np.array([math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))])
+    perp = np.array([-d[1], d[0]])
+    s = ring @ d
+    cand = np.flatnonzero(s >= s.max() - 1e-6)
+    if len(cand) == 1:
+        k = int(cand[0])
+    else:
+        t = ring[cand] @ perp
+        q = d * s.max() + perp * 0.5 * (t.min() + t.max())               # middle of the edge facing the seam
+        nxt = np.roll(ring, -1, axis=0)
+        ab = nxt - ring
+        u = np.clip(np.einsum("ij,ij->i", q - ring, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-18), 0.0, 1.0)
+        dist = np.linalg.norm(ring + u[:, None] * ab - q, axis=1)
+        e = int(np.argmin(dist))                                          # the segment e -> e+1 holds q
+        vert = np.flatnonzero(np.linalg.norm(ring - q, axis=1) < 1e-9)
+        if len(vert):
+            k = int(vert[0])
+        else:
+            ring = np.insert(ring, e + 1, q, axis=0)
+            k = e + 1
+    out = np.roll(ring, -k, axis=0)
+    return [tuple(map(float, p)) for p in out] + [tuple(map(float, out[0]))]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -64,7 +106,7 @@ def _polygons_of(geom: Optional[BaseGeometry]) -> List[sg.Polygon]:
     if geom is None or geom.is_empty:
         return []
     if geom.geom_type == "Polygon":
-        return [geom]
+        return [orient(geom, WALL_ORIENTATION)]
     if hasattr(geom, "geoms"):
         parts: List[sg.Polygon] = []
         for g in geom.geoms:
@@ -173,7 +215,7 @@ def rings_to_polygons(contours: Sequence[SpatialContour], layer_index: Optional[
     for i in order:
         if depth[i] % 2 == 0:
             holes = [rings[k].exterior.coords for k in order if parent[k] == i and depth[k] % 2 == 1]
-            polygons.append(sg.Polygon(rings[i].exterior.coords, holes))
+            polygons.append(orient(sg.Polygon(rings[i].exterior.coords, holes), WALL_ORIENTATION))
     return polygons
 
 
@@ -362,9 +404,9 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     if current.is_empty:
                         break
                     for cp in _polygons_of(current):
-                        group.append((level, list(cp.exterior.coords)))
+                        group.append((level, start_at_seam(cp.exterior.coords, profile.seam_angle_deg)))
                         for interior in cp.interiors:
-                            group.append((level, list(interior.coords)))
+                            group.append((level, start_at_seam(interior.coords, profile.seam_angle_deg)))
                     try:
                         current = current.buffer(-offset)
                     except GEOSException as exc:
@@ -419,19 +461,22 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 for i in range(1, len(coords)):
                     subdivided.extend(self._subdivide_segment(subdivided[-1], coords[i], profile.max_segment_length))
 
-                pts, normals, thicknesses = [], [], []
-                for x, y in subdivided:
-                    if strategy:
-                        pt_3d = strategy.project_to_layer(x, y, _idx)
-                        norm = strategy.compute_normal(pt_3d, _idx)
-                        thick = strategy.compute_thickness(pt_3d, _idx)
-                    else:
-                        pt_3d = (x, y, _layer.z_height)
-                        norm = (0.0, 0.0, 1.0)
-                        thick = profile.layer_height
-                    pts.append(pt_3d)
-                    normals.append(norm)
-                    thicknesses.append(thick)
+                if strategy:
+                    arr = strategy.project_points(subdivided, _idx)
+                    pts = [tuple(map(float, p)) for p in arr]
+                    normals = [tuple(map(float, n)) for n in strategy.normals_at(arr, _idx)]
+                    thicknesses = [float(t) for t in strategy.thicknesses_at(arr, _idx)]
+                else:
+                    pts = [(x, y, _layer.z_height) for x, y in subdivided]
+                    normals = [(0.0, 0.0, 1.0)] * len(pts)
+                    thicknesses = [profile.layer_height] * len(pts)
+                tol = profile.infill_path_tolerance if f_type == "infill" else profile.path_tolerance
+                if tol > 0.0 and len(pts) > 2:
+                    keep, h_eff = simplify_path(pts, normals, thicknesses, tol, profile.min_segment_length,
+                                                profile.path_angle_tolerance_deg)
+                    pts = [pts[i] for i in keep]
+                    normals = [normals[i] for i in keep]
+                    thicknesses = [thicknesses[0]] + h_eff
                 contours.append(SpatialContour(points=pts, normals=normals,
                                                thicknesses=thicknesses, feature_type=f_type))
 
@@ -446,7 +491,10 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             # 2. solid skin (100 % density, +-45 deg alternating per layer)
             solid_angle = SOLID_INFILL_ANGLE_DEG if layer_idx % 2 == 0 else -SOLID_INFILL_ANGLE_DEG
             solid_spacing = profile.nozzle_diameter
+            grow = profile.infill_overlap * profile.nozzle_diameter      # small overlap into the wall / between skin and core
             for f_type, geom in (("bottom_solid", plan.bottom_solid), ("top_solid", plan.top_solid)):
+                if grow > 0 and not geom.is_empty:
+                    geom = geom.buffer(grow)
                 for chain in fill_region(geom, solid_spacing, solid_angle):
                     add_contour(chain, f_type)
 
@@ -455,7 +503,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             if density > 0 and not plan.sparse.is_empty:
                 spacing = profile.nozzle_diameter / min(density, 1.0)
                 angle = profile.infill_angle_deg if layer_idx % 2 == 0 else -profile.infill_angle_deg
-                for chain in fill_region(plan.sparse, spacing, angle):
+                sparse = plan.sparse.buffer(grow) if grow > 0 else plan.sparse
+                for chain in fill_region(sparse, spacing, angle):
                     add_contour(chain, "infill")
 
             out_layers.append(UniversalLayer(layer_index=layer_idx, z_height=layer.z_height,

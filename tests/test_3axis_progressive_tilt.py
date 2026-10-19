@@ -24,7 +24,7 @@ def test_3axis_progressive_tilt_adaptive_extrusion():
     sliced_model = slicer.slice(mesh, params)
 
     # Check that thicknesses are populated
-    c_top = sliced_model.layers[-1].contours[0]
+    c_top = sliced_model.layers[2].contours[0]      # a layer whose tilted plane still cuts the whole cylinder
     assert c_top.thicknesses is not None
     assert len(c_top.thicknesses) == len(c_top.points)
 

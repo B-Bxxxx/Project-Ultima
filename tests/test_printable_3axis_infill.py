@@ -19,7 +19,7 @@ def test_printable_3axis_infill_and_transition():
         "layer_height": 2.0,
         "start_z": 0.0,
         "end_z": 10.0,
-        "transition_height": 5.0,  # Layer 0 (z=0) and 1 (z=2) are within transition
+        "transition_height": 8.0,  # layer 0 (printed at z = 2) is flat, the next layers are in the transition
         "nozzle_diameter": 0.4,
         "num_perimeters": 2,
         "infill_density": 0.2,
@@ -31,7 +31,7 @@ def test_printable_3axis_infill_and_transition():
     layer_0 = sliced_model.layers[0]
     for contour in layer_0.contours:
         for pt in contour.points:
-            assert pt[2] == pytest.approx(0.0, abs=1e-5)
+            assert pt[2] == pytest.approx(1.0, abs=1e-5)       # Stage 1 contours are cut at the mid-plane of layer 0 (printed at z = 2)
         for n in contour.normals:
             assert n[0] == pytest.approx(0.0, abs=1e-5)
             assert n[1] == pytest.approx(0.0, abs=1e-5)

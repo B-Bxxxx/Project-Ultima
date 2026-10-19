@@ -25,8 +25,8 @@ G1 E-{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.ret
 {% if m.hop %}
 {{ cmd }} Z{{ "%.3f"|format(m.z) }} F{{ "%.0f"|format(profile.z_speed) }} ; Z-hop down
 {% endif %}
-{% if m.retract %}
-G1 E{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.retract_speed) }} ; Prime
+{% if m.prime %}
+G1 E{{ "%.3f"|format(profile.unretract_distance) }} F{{ "%.0f"|format(profile.unretract_speed) }} ; Prime
 {% endif %}
 {% else %}
 {% if m.type_marker %}
@@ -37,7 +37,10 @@ G1 X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }} Z{{ "%.3f"|format(m.z) }}
 {% endfor %}
 ; -------------------
 ; End G-Code
-{{ cmd }} Z150{% if profile.include_rotary_axes %} B0 C0{% endif %} F{{ "%.0f"|format(profile.travel_speed) }}
+{{ cmd }} Z{{ "%.3f"|format(park_z) }} F{{ "%.0f"|format(profile.travel_speed) }}
+{% if profile.include_rotary_axes %}
+{{ cmd }} B0 C0 F{{ "%.0f"|format(profile.travel_speed) }}
+{% endif %}
 M104 S0 ; Turn off extruder
 M140 S0 ; Turn off bed
 M84 ; Disable motors

@@ -325,3 +325,122 @@ def test_invalid_travel_command_and_speeds_are_rejected():
         MinimalPrintProfile(travel_command="G2")
     with pytest.raises(ValidationError):
         MinimalPrintProfile(travel_speed=0)
+
+
+# ---------------------------------------------------------------------------------------------
+# retract and un-retract are separate parameters
+# ---------------------------------------------------------------------------------------------
+def test_unretract_defaults_to_the_retract_values():
+    p = MinimalPrintProfile(retract_distance=1.2, retract_speed=1800)
+    assert p.unretract_distance == pytest.approx(1.2) and p.unretract_speed == pytest.approx(1800)
+    p = MinimalPrintProfile(retract_distance=1.2, unretract_distance=0.0, unretract_speed=900)
+    assert p.unretract_distance == 0.0 and p.unretract_speed == 900
+
+
+def test_unretract_distance_and_speed_are_independent_of_retract():
+    gcode, _ = _gcode(retract_distance=0.8, retract_speed=2000, unretract_distance=1.1, unretract_speed=700)
+    long_run = travel_runs(_body(parse(gcode)))[-1]
+    kinds = [classify(c) for c in long_run]
+    assert kinds == ["retract", "zmove", "travel", "zmove", "prime"]
+    retract, prime = long_run[0], long_run[-1]
+    assert retract.params["E"] == pytest.approx(-0.8) and retract.params["F"] == 2000
+    assert prime.params["E"] == pytest.approx(1.1) and prime.params["F"] == 700
+    # the prime is the very last move before printing resumes
+    cmds = [c for c in parse(gcode) if c.is_move]
+    i = cmds.index(prime)
+    assert classify(cmds[i + 1]) == "extrude"
+
+
+def test_zero_unretract_distance_skips_only_the_prime_move():
+    gcode, _ = _gcode(retract_distance=0.8, unretract_distance=0.0)
+    assert [classify(c) for c in travel_runs(_body(parse(gcode)))[-1]] == ["retract", "zmove", "travel", "zmove"]
+
+
+def test_negative_unretract_is_rejected():
+    with pytest.raises(Exception):
+        MinimalPrintProfile(unretract_distance=-0.1)
+    with pytest.raises(Exception):
+        MinimalPrintProfile(unretract_speed=0)
+
+
+# ---------------------------------------------------------------------------------------------
+# park + thickness model
+# ---------------------------------------------------------------------------------------------
+def _end_block(gcode):
+    cmds = parse(gcode)
+    i = next(k for k, c in enumerate(cmds) if c.code == "" and c.comment == "End G-Code")
+    return cmds[i + 1:]
+
+
+def test_end_block_lifts_a_configurable_distance_above_the_part():
+    gcode, _ = _gcode(park_lift=30.0)
+    top = max(c.params["Z"] for c in _body(parse(gcode)) if c.is_move and "Z" in c.params and c.params.get("E", 0) > 0)
+    lift = next(c for c in _end_block(gcode) if c.is_move)
+    assert lift.params["Z"] == pytest.approx(top + 30.0)
+    assert not any(c.params.get("Z") == 150 for c in _end_block(gcode))
+    gcode, _ = _gcode(park_lift=5.0)
+    assert next(c for c in _end_block(gcode) if c.is_move).params["Z"] == pytest.approx(top + 5.0)
+
+
+def test_park_resets_b_and_c_only_on_rotary_machines():
+    traj = _synthetic()
+    p3 = MinimalPrintProfile(include_rotary_axes=False)
+    p5 = MinimalPrintProfile(include_rotary_axes=True)
+    g3 = Klipper5AxisPostProcessor().generate_gcode(traj, p3)
+    g5 = Klipper5AxisPostProcessor().generate_gcode(traj, p5)
+    assert not any("B" in c.params or "C" in c.params for c in _end_block(g3) if c.is_move)
+    assert any(c.params.get("B") == 0 and c.params.get("C") == 0 for c in _end_block(g5) if c.is_move)
+
+
+def _tilted_traj(alignment):
+    from src.common.schemas import MachineTrajectory
+    s = _state(0, 0, 0.2, 0, travel=True)
+    e = MachineStateVector(x=5, y=0, z=0.2, b=0, c=0, layer_index=0, feature_type="outer_wall",
+                           extrusion_volume=1.0, feedrate=1500.0, tool_alignment=alignment)
+    return MachineTrajectory(states=[s, e])
+
+
+def test_nozzle_axis_model_scales_extrusion_by_the_actual_nozzle_angle():
+    def e_of(model, alignment):
+        profile = MinimalPrintProfile(include_rotary_axes=False, thickness_model=model)
+        g = Klipper5AxisPostProcessor().generate_gcode(_tilted_traj(alignment), profile)
+        return next(c for c in parse(g) if classify(c) == "extrude").params["E"]
+    base = e_of("stage1", 1.0)
+    assert e_of("stage1", 0.5) == pytest.approx(base)                 # stage1 ignores the nozzle axis
+    assert e_of("nozzle_axis", 1.0) == pytest.approx(base)            # aligned nozzle: unchanged
+    assert e_of("nozzle_axis", 0.5) == pytest.approx(base * 2.0, rel=1e-3)
+    assert e_of("nozzle_axis", 0.01) == pytest.approx(base / 0.2, rel=1e-3)     # grazing angle is capped
+
+
+# ---------------------------------------------------------------------------------------------
+# Z-hop height follows the highest point of the layer
+# ---------------------------------------------------------------------------------------------
+def _wavy_layer():
+    """Layer 0 rises to z=1.0 in the middle; the travel runs between two LOW points (0.2) of the same layer."""
+    return MachineTrajectory(states=[
+        _state(0, 0, 0.2, 0, travel=True),
+        _state(10, 0, 0.2, 0),
+        _state(20, 0, 1.0, 0),                              # the highest point of the layer
+        _state(30, 0, 0.2, 0),
+        _state(0, 20, 0.2, 0, feature="infill", travel=True),   # long travel, both ends low
+        _state(30, 20, 0.2, 0, feature="infill"),
+    ])
+
+
+def test_hop_clears_the_highest_point_of_the_layer():
+    gcode, _ = _gcode(_wavy_layer(), z_hop=0.4, min_retract_travel=1.5)
+    runs = travel_runs(_body(parse(gcode)))
+    up = next(c for c in runs[-1] if classify(c) == "zmove")
+    assert up.params["Z"] == pytest.approx(1.0 + 0.4)       # layer top + hop, not max(end points) + hop
+    first = runs[0]
+    assert next(c for c in first if classify(c) == "zmove").params["Z"] == pytest.approx(1.4)
+
+
+def test_hop_at_a_layer_change_clears_both_layers():
+    traj = MachineTrajectory(states=[
+        _state(0, 0, 0.2, 0, travel=True), _state(10, 0, 0.2, 0), _state(20, 0, 1.0, 0),
+        _state(0, 20, 0.4, 1, travel=True), _state(10, 20, 0.4, 1),
+    ])
+    gcode, _ = _gcode(traj, z_hop=0.4, min_retract_travel=1.5)
+    up = next(c for c in travel_runs(_body(parse(gcode)))[-1] if classify(c) == "zmove")
+    assert up.params["Z"] == pytest.approx(1.4)

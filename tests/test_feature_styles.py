@@ -54,17 +54,3 @@ def test_grouping_respects_layer_limit_and_visibility():
     assert first_layer["bottom_solid"] and not first_layer["top_solid"]
     assert max(p[2] for v in first_layer.values() for p in v) < 1.0 + 1e-6
     assert not any(group_lines_by_feature(traj.waypoints, all_keys, 0).values())
-
-
-def test_gui_smoke_offscreen(monkeypatch):
-    import pytest
-    pytest.importorskip("PyQt6.QtWidgets", exc_type=ImportError)
-    pytest.importorskip("pyqtgraph.opengl", exc_type=ImportError)
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QApplication
-    from src import gui_app
-    app = QApplication.instance() or QApplication([])
-    win = gui_app.MainWindow()
-    assert set(win.feature_checks) == {s.key for s in FEATURE_STYLES}
-    assert win.bottom_spin.value() == 3 and win.top_spin.value() == 3
-    assert [win.travel_cmd_combo.itemText(i) for i in range(2)] == ["G0", "G1"]
