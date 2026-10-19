@@ -15,7 +15,7 @@ from typing import Callable, Tuple
 import numpy as np
 
 
-def _split_faces(F: np.ndarray, mid: np.ndarray) -> np.ndarray:
+def _split_faces(F: np.ndarray, mid: np.ndarray, V: np.ndarray) -> np.ndarray:
     """F (n,3) faces, mid (n,3) midpoint vertex id of edge (0-1, 1-2, 2-0) or -1. Returns the new faces."""
     marked = mid >= 0
     cnt = marked.sum(axis=1)
@@ -35,8 +35,14 @@ def _split_faces(F: np.ndarray, mid: np.ndarray) -> np.ndarray:
         # edges k0+1 (b-c) and k0+2 (c-a) are split; rotate so that the unmarked edge is a-b
         a, b, c = (F[two, (k0 + j) % 3] for j in range(3))
         mbc, mca = mid[two, (k0 + 1) % 3], mid[two, (k0 + 2) % 3]
-        # split the quad a, b, mbc, mca along its shorter diagonal is not known here -> fixed diagonal
-        out += [np.column_stack([a, b, mbc]), np.column_stack([a, mbc, mca]), np.column_stack([mca, mbc, c])]
+        # the quad a, b, mbc, mca is cut along its SHORTER diagonal (long diagonals make thin sliver triangles,
+        # whose plane sections come out as near-duplicate points that break the contour tracing)
+        d1 = np.linalg.norm(V[a] - V[mbc], axis=1)
+        d2 = np.linalg.norm(V[b] - V[mca], axis=1)
+        s1 = (d1 <= d2)[:, None]
+        t1 = np.where(s1, np.column_stack([a, b, mbc]), np.column_stack([a, b, mca]))
+        t2 = np.where(s1, np.column_stack([a, mbc, mca]), np.column_stack([b, mbc, mca]))
+        out += [t1, t2, np.column_stack([mca, mbc, c])]
 
     three = np.flatnonzero(cnt == 3)
     if len(three):
@@ -74,7 +80,7 @@ def refine_adaptive(vertices: np.ndarray, faces: np.ndarray,
         ids[sel] = len(V) + np.arange(len(sel))
         V = np.vstack([V, 0.5 * (V[uniq[sel, 0]] + V[uniq[sel, 1]])])
         mid = ids[inv].reshape(3, len(F)).T            # columns: edge 0-1, 1-2, 2-0 (same order as e above)
-        F = _split_faces(F, mid)
+        F = _split_faces(F, mid, V)
         if len(F) > max_faces:
             break
     return V, F

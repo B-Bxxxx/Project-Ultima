@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import trimesh
 from typing import List, Any, Dict, Optional
@@ -7,6 +9,7 @@ from src.stage1_slicer.registry import PluginRegistry
 from src.stage1_slicer.math_strategies import build_strategy
 from src.common.simplify import simplify_ring
 
+JOIN_TOLERANCE = 0.01          # mm: open ends this close are the same point (sliver triangles)
 MIN_CONTOUR_LENGTH = 0.05      # mm: shorter traced contours are numerical debris
 
 
@@ -174,4 +177,39 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                 normals = [tuple(float(x) for x in default_normal)] * len(points)
                 contours.append(SpatialContour(points=points, normals=normals))
 
-        return contours
+        return self._join_open_ends(contours, JOIN_TOLERANCE)
+
+    @staticmethod
+    def _join_open_ends(contours: List[SpatialContour], tol: float) -> List[SpatialContour]:
+        """
+        A thin sliver triangle can put two section points a few microns apart that are NOT the same key
+        after rounding; the ring then ends in two open pieces. Open pieces whose end points are closer
+        than `tol` are chained (and a piece whose own ends are that close is closed).
+        """
+        def is_open(c):
+            return len(c.points) >= 2 and math.dist(c.points[0], c.points[-1]) > 1e-9
+
+        pieces = [c for c in contours if is_open(c)]
+        done = [c for c in contours if not is_open(c)]
+        while pieces:
+            cur = pieces.pop()
+            P = list(cur.points)
+            while True:
+                if math.dist(P[0], P[-1]) <= tol and len(P) > 2:
+                    P.append(P[0])                                   # own ends meet -> close the ring
+                    break
+                best = None
+                for j, o in enumerate(pieces):
+                    for rev in (False, True):
+                        Q = o.points[::-1] if rev else o.points
+                        d = math.dist(P[-1], Q[0])
+                        if d <= tol and (best is None or d < best[0]):
+                            best = (d, j, Q)
+                if best is None:
+                    break
+                _, j, Q = best
+                pieces.pop(j)
+                P.extend(Q[1:] if best[0] < 1e-9 else Q)
+            normals = [tuple(cur.normals[0])] * len(P)
+            done.append(SpatialContour(points=P, normals=normals))
+        return done

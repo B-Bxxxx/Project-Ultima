@@ -112,7 +112,8 @@ class BaseSlicingStrategy(ABC):
         if T <= 0.0:
             z_prime = z_arr + f_arr
         else:
-            if f_arr.size and float(np.max(f_arr)) >= T:
+            if f_arr.size and float(np.max(f_arr)) >= T and not getattr(self, "_fold_warned", False):
+                self._fold_warned = True                      # once per strategy (refinement calls this many times)
                 logger.warning("max(f) = %.3g >= transition_height = %.3g: the deformation folds the layers over; "
                                "increase transition_height above max(f) or reduce the deformation.",
                                float(np.max(f_arr)), T)

@@ -155,3 +155,27 @@ def test_simplify_ring_keeps_rings_closed_and_geometry():
     assert np.abs(np.hypot(out[:, 0], out[:, 1]) - 12).max() < 1e-9           # kept points are original points
     open_line = ring[:100]
     assert np.allclose(simplify_ring(open_line, 0.005)[[0, -1]], open_line[[0, -1]])
+
+
+def test_adaptive_refinement_leaves_every_contour_closed():
+    """Regression: thin sliver triangles split a ring into open pieces ('skipping an open contour' in Stage 2)."""
+    import math
+    m = trimesh.creation.annulus(r_min=10, r_max=15, height=20)
+    m.apply_translation((0, 0, -m.bounds[0, 2]))
+    model = _slice(m, FUNCS["Rounded ridge"].to_slicer_params({}), layer_height=0.2, transition_height=6.0)
+    open_ = [(l.layer_index, len(c.points)) for l in model.layers for c in l.contours
+             if len(c.points) < 4 or math.dist(c.points[0], c.points[-1]) > 1e-9]
+    assert open_ == []
+    assert all(len([c for c in l.contours]) == 2 for l in model.layers[1:-3])      # two rings per layer
+
+
+def test_join_open_ends_chains_pieces_that_nearly_touch():
+    from src.common.schemas import SpatialContour
+    from src.stage1_slicer.plugins.field_slicer import UniversalFieldSlicerPlugin
+    mk = lambda pts: SpatialContour(points=pts, normals=[(0, 0, 1)] * len(pts))
+    a = mk([(0, 0, 0), (1, 0, 0), (1, 1, 0.0)])
+    b = mk([(0, 0, 0), (0, 1, 0), (1, 1, 0.0001)])             # ends 0.1 micron from a's end
+    out = UniversalFieldSlicerPlugin._join_open_ends([a, b], 0.01)
+    assert len(out) == 1 and len(out[0].points) >= 5
+    import math
+    assert math.dist(out[0].points[0], out[0].points[-1]) < 1e-9
