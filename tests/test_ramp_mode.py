@@ -306,7 +306,7 @@ def test_a_failing_contact_surface_is_reported_in_the_log_and_falls_back_to_the_
     part = _foot_and_slab()
     def boom(*a, **k):
         raise ImportError("networkx is missing")
-    monkeypatch.setattr(trimesh.Trimesh, "section", boom)
+    monkeypatch.setattr(trimesh.intersections, "mesh_plane", boom)
     with caplog.at_level(logging.WARNING):
         s = build_strategy("custom_expr", part, {**RAMP, "expression": "0.3*x"})
     assert s._footprint is None and s.pre_layers == 0              # old behaviour: ramp under the whole part

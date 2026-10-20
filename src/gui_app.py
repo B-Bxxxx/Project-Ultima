@@ -1,4 +1,5 @@
 import os
+import logging
 import sys
 import time
 
@@ -18,6 +19,7 @@ from pyqtgraph import Vector
 import pyqtgraph.opengl as gl
 
 from src.common.feature_styles import FEATURE_STYLES, group_lines_by_feature
+from src.common.mesh_check import check_mesh
 from src.common.placement import place_mesh
 from src.common.schemas import MinimalPrintProfile
 from src.common.view_model import (Playback, effective_layers, head_item, layer_count, move_range,
@@ -44,6 +46,8 @@ from src.stage4_postproc.klipper_postproc import Klipper5AxisPostProcessor
 # The settings column scrolls with the mouse wheel. Spin boxes, combo boxes and sliders must NOT
 # react to the wheel (a value changing while the user scrolls the menu is a nasty surprise): they
 # ignore the event, which then reaches the scroll area. Keyboard and mouse editing are unchanged.
+logger = logging.getLogger(__name__)
+
 class _NoWheel:
     def wheelEvent(self, event):
         event.ignore()
@@ -218,6 +222,7 @@ class MainWindow(QMainWindow):
 
         self.source_mesh = None      # geometry as generated / loaded
         self._stl_path = ""          # file of the loaded STL (stored in project files)
+        self._mesh_issues = []       # problems found when the STL was loaded (see common/mesh_check.py)
         self.mesh = None             # source_mesh after placement (what is sliced)
         self.stage1_model = None
         self.stage2_traj = None
@@ -858,6 +863,10 @@ class MainWindow(QMainWindow):
         loaded = trimesh.load(fname, file_type='stl', force='mesh')
         self._stl_path = fname
         self.lbl_stl.setText(fname.replace("\\", "/").split('/')[-1])
+        self._mesh_issues = check_mesh(loaded)
+        for msg in self._mesh_issues:
+            logger.warning("STL check: %s", msg)
+        self.lbl_stl.setToolTip("\n".join(self._mesh_issues))
         return loaded
 
     def _update_z_offset_visibility(self):
@@ -899,6 +908,8 @@ class MainWindow(QMainWindow):
         e = self.mesh.extents
         self.lbl_mesh_info.setText(f"Size: {e[0]:.1f} x {e[1]:.1f} x {e[2]:.1f} mm | "
                                    f"Z {self.mesh.bounds[0, 2]:.1f}..{self.mesh.bounds[1, 2]:.1f}")
+        if self.geom_combo.currentText() == "Upload STL..." and self._mesh_issues:
+            self.lbl_mesh_info.setText(self.lbl_mesh_info.text() + "\nWarning: " + " ".join(self._mesh_issues))
         if had_results:
             self.lbl_metrics.setText("Placement changed - run the pipeline again.")
         self._setup_view_controls()
