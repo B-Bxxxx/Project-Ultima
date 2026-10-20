@@ -57,3 +57,15 @@ def test_build_volume_check_compares_the_size_of_the_part():
     msgs = spec.fit_warnings([wp(-60, -60, 0), wp(60, 60, 20)])      # 120 mm in Y > 100 mm
     assert len(msgs) == 1 and "Y" in msgs[0]
     assert MachineSpec(name="m", kinematics="c", axes=["X"]).fit_warnings(ok) == []
+
+
+def test_skirt_is_free_standing_and_outside_the_brim():
+    prof = MinimalPrintProfile(brim_width=1.2, skirt_loops=2, skirt_distance=3.0, num_perimeters=1)
+    layers = StandardToolpathGenerator().generate_features(_model(), prof)
+    kinds = [c.feature_type for c in layers[0].contours]
+    assert kinds[:2] == ["skirt", "skirt"] and kinds.count("brim") == 3          # skirt first, then brim
+    sk = [c for c in layers[0].contours if c.feature_type == "skirt"]
+    ext = [max(max(abs(p[0]), abs(p[1])) for p in c.points) for c in sk]
+    assert ext[0] > ext[1] > 10 + 1.2 + 3.0 - 1e-6                              # outermost first, beyond brim + gap
+    assert all(c.feature_type != "skirt" for l in layers[1:] for c in l.contours)
+    assert MinimalPrintProfile().skirt_loops == 0

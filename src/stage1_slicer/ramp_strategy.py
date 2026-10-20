@@ -14,17 +14,45 @@ band. The ramp mode does not blend at all:
 The first full layer rests on the stair-stepped top of the ramp layers, so its thickness varies between
 `ramp_min_gap` and `ramp_min_gap + ramp_layer_height` (closed form, `first_gap`). Layer indices are global:
 0 .. K-1 ramp layers, K .. K+n-1 full layers. The standard mode is untouched.
+
+By default (`ramp_contact_only`) the ramp is built only under the BED-CONTACT surface of the part (its
+cross-section just above the bed). Where the function surface runs over a part of the model that does not
+touch the bed (an overhang), there is no ramp: the first full layer follows the function directly (nominal
+thickness, nothing below it). The contact footprint is stored in the metadata (`ramp_footprint`, WKT).
 """
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+import shapely
+import shapely.wkt
 import trimesh
+from shapely.geometry import Polygon
+from shapely.geometry.base import BaseGeometry
 
 from src.stage1_slicer.level_region import region_polygon
 from src.stage1_slicer.math_strategies import CustomExpressionStrategy, GridFieldStrategy
 
 GRID_CELL = 0.25            # mm: resolution of the ramp region grid
 MAX_GRID_CELLS = 4_000_000
+FOOTPRINT_EPS = 0.01        # mm above the bed: the part's cross-section there is its bed-contact surface
+
+
+def contact_footprint(mesh: trimesh.Trimesh, base_z: float) -> Optional[BaseGeometry]:
+    """Cross-section of the mesh just above the bed as a shapely (multi)polygon (holes by even-odd); None if empty."""
+    try:
+        sec = mesh.section(plane_origin=[0, 0, base_z + FOOTPRINT_EPS], plane_normal=[0, 0, 1])
+    except Exception:
+        return None
+    if sec is None:
+        return None
+    geom = Polygon()
+    for d in sec.discrete:
+        if len(d) < 4:
+            continue
+        ring = Polygon(np.asarray(d)[:, :2]).buffer(0)
+        geom = geom.symmetric_difference(ring)
+    geom = geom.buffer(0)
+    return None if geom.is_empty else geom
 
 
 class RampMixin:
@@ -37,6 +65,8 @@ class RampMixin:
             raise ValueError("ramp_layer_height must be > 0")
         if self.ramp_min_gap < 0.0:
             raise ValueError("ramp_min_gap must be >= 0")
+        self.ramp_contact_only = bool(p.get("ramp_contact_only", True))
+        self._footprint: Optional[BaseGeometry] = None
         self._source = mesh.copy()
         self._regions: Dict[int, Any] = {}
         self._grid = None
@@ -45,11 +75,18 @@ class RampMixin:
         if p.get("ramp_layers") is not None:                            # Stage 2 rebuild: resolved values
             self.ramp_layers = int(p["ramp_layers"])
             self.ramp_base_z = float(p["ramp_base_z"])
+            if p.get("ramp_footprint"):
+                self._footprint = shapely.wkt.loads(p["ramp_footprint"])
         elif len(self.mesh.vertices) > 0:
             self.ramp_base_z = float(self._source.bounds[0, 2])
             f = self._f(self.mesh.vertices[:, 0], self.mesh.vertices[:, 1])
             self.start_z = self.ramp_base_z + h + float(f.max())        # lowest surface point = one layer above the bed
-            top = self.start_z - float(f.min())
+            f_min = float(f.min())
+            if self.ramp_contact_only:
+                self._footprint = contact_footprint(self._source, self.ramp_base_z)
+                if self._footprint is not None:                          # the ramp only has to reach the surface over the contact area
+                    f_min = float(self._f_over(self._footprint).min())
+            top = self.start_z - f_min
             self.ramp_layers = max(0, int(np.floor((top - self.ramp_min_gap - self.ramp_base_z) / self.ramp_layer_height + 1e-9)))
         else:
             self.ramp_layers, self.ramp_base_z = 0, 0.0
@@ -60,6 +97,26 @@ class RampMixin:
     def _f(self, x, y) -> np.ndarray:
         x = np.asarray(x, float)
         return np.broadcast_to(self._evaluate(x, y), x.shape).astype(float)
+
+    def _f_over(self, geom: BaseGeometry) -> np.ndarray:
+        """f sampled over a polygon: its boundary vertices and an interior grid."""
+        b = geom.bounds
+        step = max(GRID_CELL, 0.5)
+        gx, gy = np.meshgrid(np.arange(b[0], b[2] + step, step), np.arange(b[1], b[3] + step, step))
+        gx, gy = gx.ravel(), gy.ravel()
+        inside = shapely.contains_xy(geom, gx, gy)
+        xs, ys = [gx[inside]], [gy[inside]]
+        for poly in getattr(geom, "geoms", [geom]):
+            for ring in [poly.exterior, *poly.interiors]:
+                c = np.asarray(ring.coords)
+                xs.append(c[:, 0]); ys.append(c[:, 1])
+        return self._f(np.concatenate(xs), np.concatenate(ys))
+
+    def _in_footprint(self, x, y) -> np.ndarray:
+        x = np.asarray(x, float)
+        if self._footprint is None:
+            return np.ones(x.shape, bool)
+        return shapely.contains_xy(self._footprint.buffer(1e-3), x, np.broadcast_to(np.asarray(y, float), x.shape))
 
     def _ramp_top(self, k: int) -> float:
         return self.ramp_base_z + (k + 1) * self.ramp_layer_height
@@ -72,12 +129,17 @@ class RampMixin:
         surface = self.start_z - self._f(x, y)
         count = np.floor((surface - self.ramp_min_gap - self.ramp_base_z) / self.ramp_layer_height + 1e-9)
         count = np.clip(count, 0, self.ramp_layers)
-        return surface - (self.ramp_base_z + count * self.ramp_layer_height)
+        gap = surface - (self.ramp_base_z + count * self.ramp_layer_height)
+        # off the contact surface there is no ramp: the layer is printed at its nominal thickness
+        return np.where(self._in_footprint(x, y), gap, self.layer_height)
 
     def get_resolved_params(self) -> Dict[str, Any]:
         r = super().get_resolved_params()
         r.update({"transition_mode": "ramp", "ramp_layers": int(self.ramp_layers), "ramp_base_z": float(self.ramp_base_z),
-                  "ramp_layer_height": float(self.ramp_layer_height), "ramp_min_gap": float(self.ramp_min_gap)})
+                  "ramp_layer_height": float(self.ramp_layer_height), "ramp_min_gap": float(self.ramp_min_gap),
+                  "ramp_contact_only": bool(self.ramp_contact_only)})
+        if self._footprint is not None:
+            r["ramp_footprint"] = self._footprint.simplify(0.002).wkt
         return r
 
     # -- Stage 1 slicing hooks -----------------------------------------------------------------
@@ -108,8 +170,11 @@ class RampMixin:
         if layer_idx not in self._regions:
             X, Y, S0 = self._region_grid()
             level = self._ramp_top(layer_idx) + self.ramp_min_gap
-            self._regions[layer_idx] = region_polygon(
+            region = region_polygon(
                 X, Y, S0 - level, lambda x, y: float(self.start_z - self._f(np.array(x), np.array(y)) - level))
+            if self._footprint is not None and region is not None and not region.is_empty:
+                region = region.intersection(self._footprint)
+            self._regions[layer_idx] = region
         return self._regions[layer_idx]
 
     # -- point maps: ramp layers are planar, full layers are the standard maths shifted by K -----------

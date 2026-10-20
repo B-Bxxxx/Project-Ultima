@@ -516,6 +516,12 @@ class MainWindow(QMainWindow):
         self.brim_spin = self._dspin(0.0, 0.0, 50.0, 1.0)
         self.brim_spin.setToolTip("Width of the brim around the first layer in mm (0 = none)")
         f.addRow("Brim width (mm):", self.brim_spin)
+        self.skirt_loops_spin = self._ispin(0, 0, 20)
+        self.skirt_loops_spin.setToolTip("Number of skirt loops around the first layer (0 = none)")
+        f.addRow("Skirt loops:", self.skirt_loops_spin)
+        self.skirt_dist_spin = self._dspin(3.0, 0.0, 50.0, 0.5)
+        self.skirt_dist_spin.setToolTip("Gap between the part (or its brim) and the skirt in mm")
+        f.addRow("Skirt distance (mm):", self.skirt_dist_spin)
         self.travel_cmd_combo = QComboBox()
         self.travel_cmd_combo.addItems(["G0", "G1"])
         f.addRow("Travel command:", self.travel_cmd_combo)
@@ -665,7 +671,8 @@ class MainWindow(QMainWindow):
                        "ramp_min_gap": self.ramp_gap_spin},
             "profile": {"nozzle_diameter": self.nozzle_spin, "num_perimeters": self.perims_spin,
                         "infill_density": self.infill_spin, "bottom_solid_layers": self.bottom_spin,
-                        "top_solid_layers": self.top_spin, "brim_width": self.brim_spin, "travel_command": self.travel_cmd_combo,
+                        "top_solid_layers": self.top_spin, "brim_width": self.brim_spin, "skirt_loops": self.skirt_loops_spin,
+                        "skirt_distance": self.skirt_dist_spin, "travel_command": self.travel_cmd_combo,
                         "retract_distance": self.retract_spin, "unretract_distance": self.unretract_spin,
                         "retract_speed": self.retract_speed_spin, "unretract_speed": self.unretract_speed_spin,
                         "z_hop": self.zhop_spin, "hop_short_travels": self.hop_short_chk, "park_lift": self.park_spin,
@@ -1385,6 +1392,8 @@ class MainWindow(QMainWindow):
                 bottom_solid_layers=self.bottom_spin.value(),
                 top_solid_layers=self.top_spin.value(),
                 brim_width=self.brim_spin.value(),
+                skirt_loops=self.skirt_loops_spin.value(),
+                skirt_distance=self.skirt_dist_spin.value(),
                 travel_command=self.travel_cmd_combo.currentText(),
                 retract_distance=self.retract_spin.value(),
                 unretract_distance=self.unretract_spin.value(),

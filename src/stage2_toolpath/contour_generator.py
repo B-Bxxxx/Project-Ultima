@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Print order of the features of one layer. Walls are printed per outline from the innermost
 # wall to the outer wall, then the solid skin, then the sparse infill.
-FEATURE_ORDER = ("brim", "inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
+FEATURE_ORDER = ("skirt", "brim", "inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
 
 # Scanline angle (deg) of solid skin layers; alternates sign with the layer index.
 SOLID_INFILL_ANGLE_DEG = 45.0
@@ -323,26 +323,46 @@ class LayerRegions:
     sparse: BaseGeometry = _EMPTY
 
 
-def brim_rings(polygons, width: float, nozzle: float, seam_angle_deg=None):
-    """
-    Brim loops around the OUTSIDE of the given outlines (holes are not surrounded): as many
-    nozzle-wide loops as fit in `width`, the outermost first. Loop k runs (k+1)*nozzle outside the
-    outline (the outer wall is centred on the outline). Returns a list of closed coordinate rings.
-    """
-    n = int(math.floor(width / nozzle + 1e-9)) if nozzle > 0 else 0
-    if n <= 0 or not polygons:
+def _outside_rings(polygons, offsets, seam_angle_deg=None):
+    """Closed rings running `offsets` (mm, in the given order) outside the outlines; holes are not surrounded."""
+    if not polygons:
         return []
     solid = _union([sg.Polygon(p.exterior) for p in polygons])
     rings = []
-    for k in range(n, 0, -1):
+    for d in offsets:
         try:
-            grown = solid.buffer(k * nozzle, join_style=1)
+            grown = solid.buffer(d, join_style=1)
         except GEOSException:
             continue
         for poly in _polygons_of(grown):
             ring = orient(sg.Polygon(poly.exterior), sign=WALL_ORIENTATION).exterior.coords
             rings.append(start_at_seam(ring, seam_angle_deg))
     return rings
+
+
+def brim_loops(width: float, nozzle: float) -> int:
+    """Number of nozzle-wide brim loops that fit in `width`."""
+    return int(math.floor(width / nozzle + 1e-9)) if nozzle > 0 and width > 0 else 0
+
+
+def brim_rings(polygons, width: float, nozzle: float, seam_angle_deg=None):
+    """
+    Brim loops around the OUTSIDE of the given outlines: as many nozzle-wide loops as fit in `width`,
+    the outermost first. Loop k runs k*nozzle outside the outline (the outer wall is centred on it).
+    """
+    n = brim_loops(width, nozzle)
+    return _outside_rings(polygons, [k * nozzle for k in range(n, 0, -1)], seam_angle_deg)
+
+
+def skirt_rings(polygons, loops: int, distance: float, nozzle: float, brim_width: float = 0.0, seam_angle_deg=None):
+    """
+    `loops` free-standing loops around the outlines (and the brim), the innermost `distance` away from the
+    outermost brim loop (or from the outline without a brim); the outermost loop first.
+    """
+    if loops <= 0:
+        return []
+    start = brim_loops(brim_width, nozzle) * nozzle + distance + 0.5 * nozzle
+    return _outside_rings(polygons, [start + j * nozzle for j in range(loops - 1, -1, -1)], seam_angle_deg)
 
 
 class StandardToolpathGenerator(BaseToolpathGenerator):
@@ -505,7 +525,11 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 contours.append(SpatialContour(points=pts, normals=normals,
                                                thicknesses=thicknesses, feature_type=f_type))
 
-            # 0. brim: only around the very first layer
+            # 0. skirt and brim: only around the very first layer
+            if profile.skirt_loops > 0 and layer is first_layer:
+                for ring in skirt_rings(plan.polygons, profile.skirt_loops, profile.skirt_distance,
+                                        profile.nozzle_diameter, profile.brim_width, profile.seam_angle_deg):
+                    add_contour(ring, "skirt")
             if profile.brim_width > 0 and layer is first_layer:
                 for ring in brim_rings(plan.polygons, profile.brim_width, profile.nozzle_diameter, profile.seam_angle_deg):
                     add_contour(ring, "brim")

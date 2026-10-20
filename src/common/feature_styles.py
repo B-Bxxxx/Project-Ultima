@@ -24,6 +24,7 @@ class FeatureStyle:
 
 
 FEATURE_STYLES: Tuple[FeatureStyle, ...] = (
+    FeatureStyle("skirt", "Skirt", "Free-standing loops around the first layer (nozzle priming)", (0.40, 0.70, 0.40, 1.0)),
     FeatureStyle("brim", "Brim", "Loops around the first layer (bed adhesion)", (0.55, 0.85, 0.45, 1.0)),
     FeatureStyle("outer_wall", "Outer wall", "Outermost perimeter (visible surface)", (1.0, 0.69, 0.13, 1.0)),
     FeatureStyle("inner_wall", "Inner wall", "Inner perimeters", (1.0, 0.54, 0.36, 1.0)),

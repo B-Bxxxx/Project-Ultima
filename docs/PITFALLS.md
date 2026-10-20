@@ -74,3 +74,5 @@ Problems and traps met while building the pipeline - raw material for the docume
 * A long single prompt overwhelms an assistant; split into small, verifiable tasks.
 * A branch that deletes unrelated files can look like a successful implementation - always diff against main before merging.
 * Update ARCHITECTURE.md in the same commit as the code (AGENTS.md rule 2).
+
+* `pipeline_cli.py` is unused by the author and still hardcodes a 10x10 cylinder and the old machine config; it is not maintained (decision: leave it).

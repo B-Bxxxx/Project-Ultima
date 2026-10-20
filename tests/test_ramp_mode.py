@@ -107,6 +107,8 @@ def test_first_full_layer_thickness_is_the_gap_to_the_stair_top():
     s = build_strategy("custom_expr", _part(), RAMP)
     K = s.ramp_layers
     xy = np.random.default_rng(1).uniform(-11, 11, (300, 2))
+    xy = xy[s._in_footprint(xy[:, 0], xy[:, 1])]                  # under the bed-contact surface (the ring)
+    assert len(xy) > 50
     surface = s.project_points(xy, K)[:, 2]
     tops = np.array([s._ramp_top(k) for k in range(K)])
     for (x, y), z, g in zip(xy, surface, s.first_gap(xy[:, 0], xy[:, 1])):
@@ -198,3 +200,28 @@ def test_ramp_works_with_a_data_file_function(tmp_path):
          "layer_height": 0.4, "transition_mode": "ramp", "ramp_layer_height": 0.2}
     model = _slice(p)
     assert model.metadata["ramp_layers"] > 0 and len(model.layers) > model.metadata["ramp_layers"]
+
+
+def test_ramp_is_built_only_under_the_bed_contact_surface():
+    # a 20x20 foot (z 0..4) with a 40-wide slab on top (z 4..8) that overhangs it on both sides
+    foot = trimesh.creation.box(extents=(20, 20, 4)); foot.apply_translation((0, 0, 2))
+    slab = trimesh.creation.box(extents=(40, 20, 4)); slab.apply_translation((0, 0, 6))
+    part = trimesh.util.concatenate([foot, slab])
+    prm = {**RAMP, "expression": "0.3*x", "layer_height": 0.4}
+    s = build_strategy("custom_expr", part, prm)
+    assert s._footprint is not None and s._footprint.area == pytest.approx(20 * 20, rel=1e-3)
+    K = s.ramp_layers
+    model = _slice({**prm, "strategy": "custom_expr"}, part)
+    for layer in model.layers:
+        if layer.layer_index >= K:
+            continue
+        xs = [p[0] for c in layer.contours for p in c.points]
+        assert max(abs(x) for x in xs) <= 10 + 1e-6              # nothing of the ramp over the overhang
+    # first full layer: ramp thickness over the foot, nominal thickness over the overhang
+    assert s.first_gap([15.0], [0.0])[0] == pytest.approx(0.4)
+    assert s.first_gap([0.0], [0.0])[0] >= 0.1
+    # Stage 2 rebuild keeps the footprint
+    s2 = build_strategy("custom_expr", trimesh.Trimesh(), model.metadata)
+    assert s2._footprint is not None and s2.first_gap([15.0], [0.0])[0] == pytest.approx(0.4)
+    off = build_strategy("custom_expr", part, {**prm, "ramp_contact_only": False})
+    assert off._footprint is None
