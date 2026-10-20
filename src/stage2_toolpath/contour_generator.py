@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Print order of the features of one layer. Walls are printed per outline from the innermost
 # wall to the outer wall, then the solid skin, then the sparse infill.
-FEATURE_ORDER = ("inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
+FEATURE_ORDER = ("brim", "inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
 
 # Scanline angle (deg) of solid skin layers; alternates sign with the layer index.
 SOLID_INFILL_ANGLE_DEG = 45.0
@@ -323,6 +323,28 @@ class LayerRegions:
     sparse: BaseGeometry = _EMPTY
 
 
+def brim_rings(polygons, width: float, nozzle: float, seam_angle_deg=None):
+    """
+    Brim loops around the OUTSIDE of the given outlines (holes are not surrounded): as many
+    nozzle-wide loops as fit in `width`, the outermost first. Loop k runs (k+1)*nozzle outside the
+    outline (the outer wall is centred on the outline). Returns a list of closed coordinate rings.
+    """
+    n = int(math.floor(width / nozzle + 1e-9)) if nozzle > 0 else 0
+    if n <= 0 or not polygons:
+        return []
+    solid = _union([sg.Polygon(p.exterior) for p in polygons])
+    rings = []
+    for k in range(n, 0, -1):
+        try:
+            grown = solid.buffer(k * nozzle, join_style=1)
+        except GEOSException:
+            continue
+        for poly in _polygons_of(grown):
+            ring = orient(sg.Polygon(poly.exterior), sign=WALL_ORIENTATION).exterior.coords
+            rings.append(start_at_seam(ring, seam_angle_deg))
+    return rings
+
+
 class StandardToolpathGenerator(BaseToolpathGenerator):
     """
     Stage 2 Toolpath Generator.
@@ -447,8 +469,11 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         strategy = self._build_strategy(model)
         plans = self.compute_layer_regions(model, profile)
         out_layers: List[UniversalLayer] = []
+        ordered_layers = sorted(model.layers, key=lambda l: l.layer_index)
+        # the first layer that has any printable outline carries the brim
+        first_layer = next((l for l in ordered_layers if plans[l.layer_index].polygons), None)
 
-        for layer in sorted(model.layers, key=lambda l: l.layer_index):
+        for layer in ordered_layers:
             plan = plans[layer.layer_index]
             layer_idx = layer.layer_index
 
@@ -479,6 +504,11 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     thicknesses = [thicknesses[0]] + h_eff
                 contours.append(SpatialContour(points=pts, normals=normals,
                                                thicknesses=thicknesses, feature_type=f_type))
+
+            # 0. brim: only around the very first layer
+            if profile.brim_width > 0 and layer is first_layer:
+                for ring in brim_rings(plan.polygons, profile.brim_width, profile.nozzle_diameter, profile.seam_angle_deg):
+                    add_contour(ring, "brim")
 
             # 1. walls: per outline from the innermost wall to the outer wall
             for group in plan.wall_groups:

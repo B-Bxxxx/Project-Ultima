@@ -470,7 +470,7 @@ class MainWindow(QMainWindow):
         sec = self._section("3. Stage 1 Slicer")
         f = sec.form
         self._slicer_form = f
-        self.layer_height_spin = self._dspin(0.4, 0.01, 5, 0.1)
+        self.layer_height_spin = self._dspin(0.2, 0.01, 5, 0.1)
         f.addRow("Layer Height:", self.layer_height_spin)
         self.trans_height_spin = self._dspin(2.0, 0.0, 100, 0.5)
         self.trans_height_spin.valueChanged.connect(self.update_viewport)
@@ -513,6 +513,9 @@ class MainWindow(QMainWindow):
         f.addRow("Bottom skin layers:", self.bottom_spin)
         self.top_spin = self._ispin(3, 0, 50)
         f.addRow("Top skin layers:", self.top_spin)
+        self.brim_spin = self._dspin(0.0, 0.0, 50.0, 1.0)
+        self.brim_spin.setToolTip("Width of the brim around the first layer in mm (0 = none)")
+        f.addRow("Brim width (mm):", self.brim_spin)
         self.travel_cmd_combo = QComboBox()
         self.travel_cmd_combo.addItems(["G0", "G1"])
         f.addRow("Travel command:", self.travel_cmd_combo)
@@ -662,7 +665,7 @@ class MainWindow(QMainWindow):
                        "ramp_min_gap": self.ramp_gap_spin},
             "profile": {"nozzle_diameter": self.nozzle_spin, "num_perimeters": self.perims_spin,
                         "infill_density": self.infill_spin, "bottom_solid_layers": self.bottom_spin,
-                        "top_solid_layers": self.top_spin, "travel_command": self.travel_cmd_combo,
+                        "top_solid_layers": self.top_spin, "brim_width": self.brim_spin, "travel_command": self.travel_cmd_combo,
                         "retract_distance": self.retract_spin, "unretract_distance": self.unretract_spin,
                         "retract_speed": self.retract_speed_spin, "unretract_speed": self.unretract_speed_spin,
                         "z_hop": self.zhop_spin, "hop_short_travels": self.hop_short_chk, "park_lift": self.park_spin,
@@ -971,7 +974,8 @@ class MainWindow(QMainWindow):
 
     def _show_check(self, stats, source):
         """Compact text + verdict from GapStats; the machine mode decides, both directions are shown."""
-        chk = thickness_check.check(stats, self.nozzle_spin.value(), self._is_rotary(), self.layer_height_spin.value())
+        chk = thickness_check.check(stats, self.nozzle_spin.value(), self._is_rotary(), self.layer_height_spin.value(),
+                                    self._max_tilt())
         lo, hi = chk.window
         other = "normal" if chk.direction == "vertical" else "vertical"
         lines = [f"Nozzle window {lo:.2f} .. {hi:.2f} mm ({source})",
@@ -983,7 +987,19 @@ class MainWindow(QMainWindow):
         else:
             lines.append(f"NOT printable for this machine ({chk.direction}):")
             lines.extend("- " + m.split(": ", 1)[-1] for m in chk.messages)
+        if chk.tilt_warning:
+            lines.append("Warning: " + chk.tilt_warning)
         return "\n".join(lines), chk
+
+    def _max_tilt(self):
+        """The tilt limit of a 3-axis machine (None for machines with rotary axes: they follow the surface)."""
+        mspec = self.current_machine()
+        if mspec is None or mspec.has_rotary_axes:
+            return None
+        try:
+            return float(mspec.to_machine_config(self.machine_form.values()).max_3axis_tilt_deg)
+        except (MachineFileError, ValueError):
+            return None
 
     def _render_check(self, ok=True):
         text = self._check_text + (("\n" + self._check_note) if self._check_note else "")
@@ -1025,7 +1041,7 @@ class MainWindow(QMainWindow):
         self._check_text, chk = self._show_check(stats, "estimate")
         if not chk.ok and not self._check_relevant:
             self._check_note = "The transition height does not change these gaps."
-        self._render_check(chk.ok)
+        self._render_check(chk.ok and not chk.tilt_warning)
         self._check_ok = chk.ok
         self.btn_suggested.setVisible(not chk.ok and self._check_relevant)     # only when the transition can help
 
@@ -1368,6 +1384,7 @@ class MainWindow(QMainWindow):
                 infill_density=self.infill_spin.value(),
                 bottom_solid_layers=self.bottom_spin.value(),
                 top_solid_layers=self.top_spin.value(),
+                brim_width=self.brim_spin.value(),
                 travel_command=self.travel_cmd_combo.currentText(),
                 retract_distance=self.retract_spin.value(),
                 unretract_distance=self.unretract_spin.value(),
@@ -1396,6 +1413,7 @@ class MainWindow(QMainWindow):
 
             dt = time.time() - t0
             pts = len(self.stage2_traj.waypoints)
+            fit = mspec.fit_warnings(self.stage2_traj.waypoints)
             self._setup_view_controls()
             note = ""
             stats = thickness_check.measure_model(self.stage1_model)
@@ -1403,6 +1421,10 @@ class MainWindow(QMainWindow):
                 _, chk = self._show_check(stats, "measured on the slice")
                 if not chk.ok:
                     note = "\nWarning (measured layer gaps): " + "; ".join(chk.messages)
+                if chk.tilt_warning:
+                    note += "\nWarning (measured): " + chk.tilt_warning
+            if fit:
+                note += "\nWarning (build volume): " + "; ".join(fit)
             self.lbl_metrics.setText(f"Done in {dt:.2f}s | Layers: {self._layer_total()} | Pts: {pts}{note}")
             self.update_viewport()
 

@@ -53,6 +53,29 @@ class MachineSpec:
     def has_rotary_axes(self) -> bool:
         return "B" in self.axes or "C" in self.axes
 
+    def fit_warnings(self, waypoints) -> list:
+        """
+        Non-blocking check: does the printed part (brim included) fit the machine's build volume?
+        Compares the SIZE of the toolpath's bounding box per axis with the size of the build volume
+        (positions are not compared: where the part sits on the bed is the user's placement).
+        Returns a list of messages; empty = fits, or the machine file gives no build volume.
+        """
+        if not self.build_volume:
+            return []
+        pts = [(w.x, w.y, w.z) for w in waypoints if not w.is_travel_move]
+        if not pts:
+            return []
+        msgs = []
+        for i, axis in enumerate("xyz"):
+            lim = self.build_volume.get(axis)
+            if not lim:
+                continue
+            vals = [p[i] for p in pts]
+            size, room = max(vals) - min(vals), float(lim[1]) - float(lim[0])
+            if size > room + 1e-6:
+                msgs.append(f"the part is {size:.1f} mm in {axis.upper()}, the build volume only {room:.1f} mm")
+        return msgs
+
     @classmethod
     def from_dict(cls, d: Any, source: str = "") -> "MachineSpec":
         where = f"{os.path.basename(source)}: " if source else ""

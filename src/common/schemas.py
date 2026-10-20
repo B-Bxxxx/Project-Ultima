@@ -24,6 +24,7 @@ class MinimalPrintProfile(BaseModel):
         description="Number of perimeters (walls). Profile files may also call it 'wall_count'.")
     bottom_solid_layers: int = Field(3, ge=0, description="Number of solid bottom skin layers (0 disables the bottom skin)")
     top_solid_layers: int = Field(3, ge=0, description="Number of solid top skin layers (0 disables the top skin)")
+    brim_width: float = Field(0.0, ge=0.0, description="Width in mm of the brim: concentric loops around the outside of the first layer for bed adhesion (0 = no brim). Rounded down to whole nozzle widths.")
     infill_density: float = Field(0.2, ge=0.0, le=1.0, description="Sparse infill density as a FRACTION 0..1 (0.2 = 20 %)")
     infill_overlap: float = Field(0.15, ge=0.0, le=0.5, description="Infill (and skin) lines reach this fraction of the nozzle diameter into the innermost wall / into each other, for a good bond. 0 = lines only touch.")
     infill_pattern: str = Field("lines", description="Infill pattern. Only 'lines' (parallel zigzag) is implemented; other values fall back to it with a warning.")
@@ -82,7 +83,7 @@ class SpatialContour(BaseModel):
     thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
     vertical_gaps: Optional[List[float]] = Field(None, description="Stage 1: vertical (Z) distance from this layer's surface to the next layer at each point - the gap a vertical (3-axis) nozzle works in")
     normal_gaps: Optional[List[float]] = Field(None, description="Stage 1: distance between this and the next layer measured along the layer's surface normal at each point - the gap a nozzle aligned with the normal (5-axis) works in")
-    feature_type: str = Field("boundary", description="Type of feature: boundary, outer_wall, inner_wall, bottom_solid, top_solid or infill (sparse)")
+    feature_type: str = Field("boundary", description="Type of feature: boundary, brim, outer_wall, inner_wall, bottom_solid, top_solid or infill (sparse)")
 
 class UniversalLayer(BaseModel):
     """
