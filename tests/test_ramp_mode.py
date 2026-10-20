@@ -311,3 +311,18 @@ def test_a_failing_contact_surface_is_reported_in_the_log_and_falls_back_to_the_
         s = build_strategy("custom_expr", part, {**RAMP, "expression": "0.3*x"})
     assert s._footprint is None and s.pre_layers == 0              # old behaviour: ramp under the whole part
     assert any("bed-contact surface could not be computed" in r.message and "networkx" in r.message for r in caplog.records)
+
+
+def test_contact_footprint_needs_neither_scipy_nor_networkx_and_keeps_holes(monkeypatch):
+    # trimesh.path (mesh.section) needs scipy / networkx; the footprint must work without them
+    from src.stage1_slicer.ramp_strategy import contact_footprint
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "networkx", None)
+    ring = trimesh.creation.annulus(r_min=4, r_max=10, height=5, sections=64)
+    ring.apply_translation((0, 0, 2.5))
+    ring.apply_transform(trimesh.transformations.rotation_matrix(0.37, [0, 0, 1]))     # no axis-aligned luck
+    g = contact_footprint(ring, 0.0)
+    assert g is not None and len(g.interiors) == 1
+    assert g.area == pytest.approx(np.pi * (100 - 16), rel=0.01)
+    box = contact_footprint(_foot_and_slab(), 0.0)
+    assert box.area == pytest.approx(400, rel=1e-3)

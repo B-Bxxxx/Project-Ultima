@@ -40,7 +40,8 @@ import numpy as np
 import shapely
 import shapely.wkt
 import trimesh
-from shapely.geometry import Polygon
+import shapely.ops
+from shapely.geometry import LineString, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from src.stage1_slicer.level_region import region_polygon
@@ -60,17 +61,19 @@ def contact_footprint(mesh: trimesh.Trimesh, base_z: float) -> Optional[BaseGeom
     whole part.
     """
     try:
-        sec = mesh.section(plane_origin=[0, 0, base_z + FOOTPRINT_EPS], plane_normal=[0, 0, 1])
-        if sec is None:
+        # plain plane/mesh segments + shapely: no trimesh.path (it needs scipy / networkx)
+        segs = trimesh.intersections.mesh_plane(mesh, [0, 0, 1], [0, 0, base_z + FOOTPRINT_EPS])
+        if segs is None or len(segs) == 0:
             logger.warning("Ramp: the part has no cross-section just above the bed (it touches the bed in a point or "
                            "a line only); the ramp is built under the WHOLE part.")
             return None
+        lines = shapely.ops.unary_union([LineString(np.round(np.asarray(sg)[:, :2], 5)) for sg in segs])   # snapped: shared ends must match
+        merged = shapely.ops.linemerge(lines)
         geom = Polygon()
-        for d in sec.discrete:
-            if len(d) < 4:
+        for ring in getattr(merged, "geoms", [merged]):
+            if not ring.is_ring:
                 continue
-            ring = Polygon(np.asarray(d)[:, :2]).buffer(0)
-            geom = geom.symmetric_difference(ring)
+            geom = geom.symmetric_difference(Polygon(ring).buffer(0))        # even-odd: holes cancel out
         geom = geom.buffer(0)
     except Exception as exc:
         logger.warning("Ramp: the bed-contact surface could not be computed (%s: %s); the ramp is built under the "
