@@ -2,6 +2,7 @@
 import os
 import sys
 
+import numpy as np
 import pytest
 import trimesh
 
@@ -69,3 +70,21 @@ def test_skirt_is_free_standing_and_outside_the_brim():
     assert ext[0] > ext[1] > 10 + 1.2 + 3.0 - 1e-6                              # outermost first, beyond brim + gap
     assert all(c.feature_type != "skirt" for l in layers[1:] for c in l.contours)
     assert MinimalPrintProfile().skirt_loops == 0
+
+
+def test_walls_of_one_boundary_are_printed_in_one_go_outline_and_hole_do_not_alternate():
+    ring = trimesh.creation.annulus(r_min=6, r_max=15, height=2, sections=96)
+    ring.apply_translation((0, 0, 1))
+    model = PluginRegistry.get_plugin("universal_field_slicer")().slice(ring, {"strategy": "planar", "layer_height": 0.2})
+    layers = StandardToolpathGenerator().generate_features(model, MinimalPrintProfile(num_perimeters=4))
+    walls = [c for c in layers[2].contours if c.feature_type in ("inner_wall", "outer_wall")]
+    assert len(walls) == 8
+    radii = [float(np.mean([np.hypot(p[0], p[1]) for p in c.points])) for c in walls]
+    boundary = ["out" if r > 10.5 else "hole" for r in radii]
+    assert sum(a != b for a, b in zip(boundary, boundary[1:])) == 1               # one jump between the two boundaries
+    first = radii[:4] if boundary[0] == "out" else radii[:4]
+    out_r = [r for r, b in zip(radii, boundary) if b == "out"]
+    hole_r = [r for r, b in zip(radii, boundary) if b == "hole"]
+    assert out_r == sorted(out_r) and hole_r == sorted(hole_r, reverse=True)     # innermost wall first, the surface wall last
+    types = [c.feature_type for c in walls]
+    assert types[3] == "outer_wall" and types[7] == "outer_wall" and types.count("outer_wall") == 2

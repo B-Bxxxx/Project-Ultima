@@ -315,8 +315,9 @@ class LayerRegions:
     """Shapely description of one layer (XY plane)."""
     layer_index: int
     polygons: List[sg.Polygon] = field(default_factory=list)   # printable outlines (holes included)
-    # wall rings per outline: [(level, ring coords)], level 0 = outer wall
-    wall_groups: List[List[Tuple[int, List[Tuple[float, float]]]]] = field(default_factory=list)
+    # wall rings per outline: [(level, ring coords, chain)], level 0 = outer wall; a chain is the series of
+    # nested rings of one boundary (the outer outline, or one hole), from the innermost wall to the outer wall
+    wall_groups: List[List[Tuple[int, List[Tuple[float, float]], int]]] = field(default_factory=list)
     region: BaseGeometry = _EMPTY          # infill region = outlines eroded by all walls
     bottom_solid: BaseGeometry = _EMPTY
     top_solid: BaseGeometry = _EMPTY
@@ -440,15 +441,28 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
             region_parts = []
             for outline in plan.polygons:
-                group: List[Tuple[int, List[Tuple[float, float]]]] = []
+                group: List[Tuple[int, List[Tuple[float, float]], int]] = []
+                prev: List[Tuple[int, sg.LinearRing]] = []          # (chain, ring) of the previous wall level
+                n_chains = 0
                 current: BaseGeometry = outline
                 for level in range(profile.num_perimeters):
                     if current.is_empty:
                         break
+                    this_level: List[Tuple[int, sg.LinearRing]] = []
+                    ring_list = []
                     for cp in _polygons_of(current):
-                        group.append((level, start_at_seam(cp.exterior.coords, profile.seam_angle_deg)))
-                        for interior in cp.interiors:
-                            group.append((level, start_at_seam(interior.coords, profile.seam_angle_deg)))
+                        ring_list.append(cp.exterior)
+                        ring_list.extend(cp.interiors)
+                    for lr in ring_list:
+                        # the ring continues the nearest ring of the previous level (the same boundary, one wall in)
+                        if prev:
+                            chain = min(prev, key=lambda pc: pc[1].distance(lr))[0]
+                        else:
+                            chain = n_chains
+                            n_chains += 1
+                        this_level.append((chain, lr))
+                        group.append((level, start_at_seam(lr.coords, profile.seam_angle_deg), chain))
+                    prev = this_level
                     try:
                         current = current.buffer(-offset)
                     except GEOSException as exc:
@@ -535,12 +549,25 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     add_contour(ring, "brim")
 
             # 1. walls: per outline from the innermost wall to the outer wall
+            # (one boundary - the outline or a hole - is printed in one go, wall after wall; the next boundary is
+            # the nearest one: no jumping between the outline and its holes level by level)
             for group in plan.wall_groups:
-                for level in sorted({lv for lv, _ in group}, reverse=True):
-                    f_type = "outer_wall" if level == 0 else "inner_wall"
-                    for lv, ring in group:
-                        if lv == level:
-                            add_contour(ring, f_type)
+                chains: Dict[int, List[Tuple[int, List[Tuple[float, float]]]]] = {}
+                for lv, ring, chain in group:
+                    chains.setdefault(chain, []).append((lv, ring))
+                remaining = list(chains)
+                while remaining:
+                    pos = contours[-1].points[-1][:2] if contours else None
+
+                    def start_dist(c):
+                        if pos is None:
+                            return 0.0
+                        first = max(chains[c], key=lambda t: t[0])[1][0]       # innermost ring of the chain
+                        return math.dist(pos, first)
+                    nxt = min(remaining, key=start_dist)
+                    remaining.remove(nxt)
+                    for lv, ring in sorted(chains[nxt], key=lambda t: -t[0]):
+                        add_contour(ring, "outer_wall" if lv == 0 else "inner_wall")
 
             # 2. solid skin (100 % density, +-45 deg alternating per layer)
             solid_angle = SOLID_INFILL_ANGLE_DEG if layer_idx % 2 == 0 else -SOLID_INFILL_ANGLE_DEG
