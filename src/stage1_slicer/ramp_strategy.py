@@ -33,6 +33,7 @@ of the whole mesh: with `ramp_contact_only` the ramp is the small wedge under th
 whose surface still dips below the bed somewhere outside the footprint (z' < `clear_z`) is clipped to the
 region where it is at least one layer height above the bed.
 """
+import logging
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -45,27 +46,40 @@ from shapely.geometry.base import BaseGeometry
 from src.stage1_slicer.level_region import region_polygon
 from src.stage1_slicer.math_strategies import CustomExpressionStrategy, GridFieldStrategy
 
+logger = logging.getLogger(__name__)
+
 GRID_CELL = 0.25            # mm: resolution of the ramp region grid
 MAX_GRID_CELLS = 4_000_000
 FOOTPRINT_EPS = 0.01        # mm above the bed: the part's cross-section there is its bed-contact surface
 
 
 def contact_footprint(mesh: trimesh.Trimesh, base_z: float) -> Optional[BaseGeometry]:
-    """Cross-section of the mesh just above the bed as a shapely (multi)polygon (holes by even-odd); None if empty."""
+    """
+    Cross-section of the mesh just above the bed as a shapely (multi)polygon (holes by even-odd); None if it
+    cannot be found. The reason is logged (terminal), because without the footprint the ramp is built under the
+    whole part.
+    """
     try:
         sec = mesh.section(plane_origin=[0, 0, base_z + FOOTPRINT_EPS], plane_normal=[0, 0, 1])
-    except Exception:
+        if sec is None:
+            logger.warning("Ramp: the part has no cross-section just above the bed (it touches the bed in a point or "
+                           "a line only); the ramp is built under the WHOLE part.")
+            return None
+        geom = Polygon()
+        for d in sec.discrete:
+            if len(d) < 4:
+                continue
+            ring = Polygon(np.asarray(d)[:, :2]).buffer(0)
+            geom = geom.symmetric_difference(ring)
+        geom = geom.buffer(0)
+    except Exception as exc:
+        logger.warning("Ramp: the bed-contact surface could not be computed (%s: %s); the ramp is built under the "
+                       "WHOLE part.", type(exc).__name__, exc)
         return None
-    if sec is None:
+    if geom.is_empty:
+        logger.warning("Ramp: the bed-contact surface is empty; the ramp is built under the WHOLE part.")
         return None
-    geom = Polygon()
-    for d in sec.discrete:
-        if len(d) < 4:
-            continue
-        ring = Polygon(np.asarray(d)[:, :2]).buffer(0)
-        geom = geom.symmetric_difference(ring)
-    geom = geom.buffer(0)
-    return None if geom.is_empty else geom
+    return geom
 
 
 class RampMixin:

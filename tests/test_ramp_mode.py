@@ -300,3 +300,14 @@ def test_first_function_layer_touches_the_bed_at_the_farthest_point_of_the_footp
     low = min(p[2] for l in model.layers if l.layer_index >= K for c in l.contours for p in c.points)
     assert low >= 0.1 - 1e-6                                      # no function layer is printed below the bed
     assert any(l.layer_index == K for l in model.layers)          # the first function layer exists
+
+
+def test_a_failing_contact_surface_is_reported_in_the_log_and_falls_back_to_the_whole_part(monkeypatch, caplog):
+    part = _foot_and_slab()
+    def boom(*a, **k):
+        raise ImportError("networkx is missing")
+    monkeypatch.setattr(trimesh.Trimesh, "section", boom)
+    with caplog.at_level(logging.WARNING):
+        s = build_strategy("custom_expr", part, {**RAMP, "expression": "0.3*x"})
+    assert s._footprint is None and s.pre_layers == 0              # old behaviour: ramp under the whole part
+    assert any("bed-contact surface could not be computed" in r.message and "networkx" in r.message for r in caplog.records)
