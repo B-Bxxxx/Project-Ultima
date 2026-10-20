@@ -11,7 +11,9 @@ from src.common.simplify import simplify_ring
 
 JOIN_TOLERANCE = 0.01          # mm: open ends this close are the same point (sliver triangles)
 MIN_CLIP_AREA = 0.01             # mm2: smaller clipped pieces are not printable
-MIN_CONTOUR_LENGTH = 0.05      # mm: shorter traced contours are numerical debris
+MIN_CONTOUR_LENGTH = 0.05
+COPLANAR_TOL = 1e-6      # a mesh vertex this close to the slice plane = a face lies IN the plane
+COPLANAR_NUDGE = 1e-4    # the plane is then moved this far (along its normal) to one side      # mm: shorter traced contours are numerical debris
 
 
 @PluginRegistry.register("universal_field_slicer")
@@ -85,7 +87,7 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
             plane_origin, plane_normal = strategy.get_slice_plane(layer_idx)
 
             # Slice the deformed mesh
-            path_2d = trimesh.intersections.mesh_plane(strategy.slice_source(layer_idx), plane_normal, plane_origin)
+            path_2d = self._section(strategy.slice_source(layer_idx), plane_normal, plane_origin)
 
             if path_2d is None or len(path_2d) == 0:
                 continue
@@ -137,6 +139,29 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                     pts = [(float(x), float(y), float(z)) for x, y in ring.coords]
                     out.append(SpatialContour(points=pts, normals=[(0.0, 0.0, 1.0)] * len(pts)))
         return out
+
+    @staticmethod
+    def _section(mesh, normal, origin):
+        """
+        Plane section of the mesh. When a flat face lies exactly IN the plane (e.g. the top of a slab at a
+        mid-layer height) the section degenerates into open, broken loops. The plane is then moved by a
+        tiny nudge to the side that gives the larger section (the side with material), the result is closed.
+        """
+        n = np.asarray(normal, float)
+        o = np.asarray(origin, float)
+        V = mesh.vertices
+        if len(V) and np.any(np.abs((V - o) @ n) < COPLANAR_TOL):
+            best, best_len = None, -1.0
+            for sign in (-1.0, 1.0):
+                path = trimesh.intersections.mesh_plane(mesh, normal, o + sign * COPLANAR_NUDGE * n)
+                if path is None or len(path) == 0:
+                    continue
+                length = float(np.linalg.norm(np.asarray(path)[:, 1] - np.asarray(path)[:, 0], axis=1).sum())
+                if length > best_len:
+                    best, best_len = path, length
+            if best is not None:
+                return best
+        return trimesh.intersections.mesh_plane(mesh, normal, origin)
 
     @staticmethod
     def _path_length(points) -> float:

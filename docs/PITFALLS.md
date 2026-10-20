@@ -76,3 +76,5 @@ Problems and traps met while building the pipeline - raw material for the docume
 * Update ARCHITECTURE.md in the same commit as the code (AGENTS.md rule 2).
 
 * `pipeline_cli.py` is unused by the author and still hardcodes a 10x10 cylinder and the old machine config; it is not maintained (decision: leave it).
+
+* Ramp contact-only without pre-layers dropped overhang material below the first full layer (Part69: ~1650 mm3 of 26900) - fixed with pre-layers. Slicing in a plane that contains a flat face gave open contours ("skipping an open contour") - fixed by nudging the plane. Known limit: non-contact material lower than one layer height above the bed (e.g. a chamfered underside) is not printed by the pre-layers.

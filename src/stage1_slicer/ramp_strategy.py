@@ -19,6 +19,14 @@ By default (`ramp_contact_only`) the ramp is built only under the BED-CONTACT su
 cross-section just above the bed). Where the function surface runs over a part of the model that does not
 touch the bed (an overhang), there is no ramp: the first full layer follows the function directly (nominal
 thickness, nothing below it). The contact footprint is stored in the metadata (`ramp_footprint`, WKT).
+
+Material outside the footprint that lies BELOW the first full layer (e.g. a slab overhanging the foot) would
+be lost, so the function layers also exist before the first full layer: the PRE-LAYERS (layer indices
+K .. K+P-1, constant thickness, full w = 1). A pre-layer is a partial function layer: it exists only outside
+the footprint and only where its surface is at least one layer height above the bed, so it grows outward from
+the foot, each layer resting on the previous one. Global indices: 0 .. K-1 ramp, K .. K+P-1 pre-layers,
+K+P first full layer, then the rest. `first_z` is the surface level of the first full layer; the base
+class's `start_z` is lowered by P layers so the common maths stays unchanged.
 """
 from typing import Any, Dict, Optional, Tuple
 
@@ -67,6 +75,7 @@ class RampMixin:
             raise ValueError("ramp_min_gap must be >= 0")
         self.ramp_contact_only = bool(p.get("ramp_contact_only", True))
         self._footprint: Optional[BaseGeometry] = None
+        self.pre_layers = 0
         self._source = mesh.copy()
         self._regions: Dict[int, Any] = {}
         self._grid = None
@@ -77,6 +86,9 @@ class RampMixin:
             self.ramp_base_z = float(p["ramp_base_z"])
             if p.get("ramp_footprint"):
                 self._footprint = shapely.wkt.loads(p["ramp_footprint"])
+            self.pre_layers = int(p.get("ramp_pre_layers", 0))
+            self.first_z = float(p.get("ramp_first_z", self.start_z + self.pre_layers * h))
+            self.start_z = self.first_z - self.pre_layers * h
         elif len(self.mesh.vertices) > 0:
             self.ramp_base_z = float(self._source.bounds[0, 2])
             f = self._f(self.mesh.vertices[:, 0], self.mesh.vertices[:, 1])
@@ -88,8 +100,12 @@ class RampMixin:
                     f_min = float(self._f_over(self._footprint).min())
             top = self.start_z - f_min
             self.ramp_layers = max(0, int(np.floor((top - self.ramp_min_gap - self.ramp_base_z) / self.ramp_layer_height + 1e-9)))
+            self.first_z = self.start_z
+            self.pre_layers = self._count_pre_layers()
+            self.start_z = self.first_z - self.pre_layers * h
         else:
             self.ramp_layers, self.ramp_base_z = 0, 0.0
+            self.first_z = getattr(self, "start_z", 0.0)
         self.num_full_layers = self._count_layers(self.start_z, self.end_z, h)
         self.num_layers = self.ramp_layers + self.num_full_layers
 
@@ -112,6 +128,18 @@ class RampMixin:
                 xs.append(c[:, 0]); ys.append(c[:, 1])
         return self._f(np.concatenate(xs), np.concatenate(ys))
 
+    def _count_pre_layers(self) -> int:
+        """Function layers needed BEFORE the first full layer: the lowest deformed height z' = z + f of the
+        material outside the contact footprint, counted down from the first full layer."""
+        if self._footprint is None:
+            return 0
+        pts = np.vstack([self._source.vertices, trimesh.sample.sample_surface(self._source, 20000, seed=0)[0]])
+        out = ~self._in_footprint(pts[:, 0], pts[:, 1])
+        if not out.any():
+            return 0
+        zp_min = float((pts[out, 2] + self._f(pts[out, 0], pts[out, 1])).min())
+        return max(0, int(np.ceil((self.first_z - zp_min) / self.layer_height - 1e-9)))
+
     def _in_footprint(self, x, y) -> np.ndarray:
         x = np.asarray(x, float)
         if self._footprint is None:
@@ -126,7 +154,7 @@ class RampMixin:
 
     def first_gap(self, x, y) -> np.ndarray:
         """Thickness of the first full layer at (x, y): its surface minus the top of the highest ramp layer there."""
-        surface = self.start_z - self._f(x, y)
+        surface = self.first_z - self._f(x, y)
         count = np.floor((surface - self.ramp_min_gap - self.ramp_base_z) / self.ramp_layer_height + 1e-9)
         count = np.clip(count, 0, self.ramp_layers)
         gap = surface - (self.ramp_base_z + count * self.ramp_layer_height)
@@ -137,7 +165,8 @@ class RampMixin:
         r = super().get_resolved_params()
         r.update({"transition_mode": "ramp", "ramp_layers": int(self.ramp_layers), "ramp_base_z": float(self.ramp_base_z),
                   "ramp_layer_height": float(self.ramp_layer_height), "ramp_min_gap": float(self.ramp_min_gap),
-                  "ramp_contact_only": bool(self.ramp_contact_only)})
+                  "ramp_contact_only": bool(self.ramp_contact_only),
+                  "ramp_pre_layers": int(self.pre_layers), "ramp_first_z": float(self.first_z)})
         if self._footprint is not None:
             r["ramp_footprint"] = self._footprint.simplify(0.002).wkt
         return r
@@ -161,21 +190,34 @@ class RampMixin:
             X = np.arange(b[0, 0] - 2 * cell, b[1, 0] + 2 * cell + cell, cell)
             Y = np.arange(b[0, 1] - 2 * cell, b[1, 1] + 2 * cell + cell, cell)
             XX, YY = np.meshgrid(X, Y)
-            self._grid = (X, Y, self.start_z - self._f(XX, YY))         # surface of the first full layer
+            self._grid = (X, Y, self._f(XX, YY))                        # the function on the grid
         return self._grid
 
+    def _is_pre(self, layer_idx: int) -> bool:
+        return self.ramp_layers <= layer_idx < self.ramp_layers + self.pre_layers
+
     def layer_region(self, layer_idx: int):
-        if not self._is_ramp(layer_idx):
-            return None
-        if layer_idx not in self._regions:
-            X, Y, S0 = self._region_grid()
-            level = self._ramp_top(layer_idx) + self.ramp_min_gap
+        if layer_idx in self._regions:
+            return self._regions[layer_idx]
+        if self._is_ramp(layer_idx):
+            X, Y, F = self._region_grid()
+            level = self._ramp_top(layer_idx) + self.ramp_min_gap          # the first full surface must be above this
             region = region_polygon(
-                X, Y, S0 - level, lambda x, y: float(self.start_z - self._f(np.array(x), np.array(y)) - level))
+                X, Y, self.first_z - F - level, lambda x, y: float(self.first_z - self._f(np.array(x), np.array(y)) - level))
             if self._footprint is not None and region is not None and not region.is_empty:
                 region = region.intersection(self._footprint)
-            self._regions[layer_idx] = region
-        return self._regions[layer_idx]
+        elif self._is_pre(layer_idx):
+            X, Y, F = self._region_grid()
+            zp = self.start_z + (layer_idx - self.ramp_layers) * self.layer_height     # z' of the layer top
+            level = self.ramp_base_z + self.layer_height                               # surface at least one layer above the bed
+            region = region_polygon(
+                X, Y, zp - F - level, lambda x, y: float(zp - self._f(np.array(x), np.array(y)) - level))
+            if self._footprint is not None and region is not None and not region.is_empty:
+                region = region.difference(self._footprint)                            # under the footprint the ramp is built
+        else:
+            return None
+        self._regions[layer_idx] = region
+        return region
 
     # -- point maps: ramp layers are planar, full layers are the standard maths shifted by K -----------
     def undeform_point(self, pt, layer_idx: int):
@@ -197,7 +239,7 @@ class RampMixin:
     def compute_thickness(self, pt, layer_idx: int) -> float:
         if self._is_ramp(layer_idx):
             return float(self.ramp_layer_height)
-        if layer_idx == self.ramp_layers:
+        if layer_idx == self.ramp_layers + self.pre_layers:
             return float(self.first_gap(pt[0], pt[1]))
         return super().compute_thickness(pt, layer_idx - self.ramp_layers)
 
@@ -228,7 +270,7 @@ class RampMixin:
         pts = np.asarray(pts, float).reshape(-1, 3)
         if self._is_ramp(layer_idx):
             return np.full(len(pts), float(self.ramp_layer_height))
-        if layer_idx == self.ramp_layers:
+        if layer_idx == self.ramp_layers + self.pre_layers:
             return self.first_gap(pts[:, 0], pts[:, 1])
         return super().thicknesses_at(pts, layer_idx - self.ramp_layers)
 

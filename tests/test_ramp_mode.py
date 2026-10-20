@@ -225,3 +225,52 @@ def test_ramp_is_built_only_under_the_bed_contact_surface():
     assert s2._footprint is not None and s2.first_gap([15.0], [0.0])[0] == pytest.approx(0.4)
     off = build_strategy("custom_expr", part, {**prm, "ramp_contact_only": False})
     assert off._footprint is None
+
+
+def _foot_and_slab():
+    foot = trimesh.creation.box(extents=(20, 20, 4)); foot.apply_translation((0, 0, 2))
+    slab = trimesh.creation.box(extents=(60, 60, 3)); slab.apply_translation((0, 0, 5.5))
+    return trimesh.util.concatenate([foot, slab])
+
+
+def _printed_volume(model):
+    from src.stage2_toolpath.contour_generator import rings_to_polygons
+    total = 0.0
+    for l in model.layers:
+        polys = rings_to_polygons(l.contours, l.layer_index)
+        th = [t for c in l.contours for t in (c.thicknesses or [])]
+        total += sum(p.area for p in polys) * (float(np.mean(th)) if th else 0.2)
+    return total
+
+
+def test_overhang_material_below_the_first_full_layer_is_not_lost_pre_layers():
+    part = _foot_and_slab()                                     # slab overhangs the foot by 20 mm all around
+    prm = {**RAMP, "strategy": "custom_expr", "expression": "r*tan(radians(45))", "layer_height": 0.2}
+    s = build_strategy("custom_expr", part, prm)
+    assert s.pre_layers > 0
+    assert s.num_layers == s.ramp_layers + s.num_full_layers and s.num_full_layers > s.pre_layers   # pre-layers are counted in the full layers
+    model = _slice(prm, part)
+    assert model.metadata["ramp_pre_layers"] == s.pre_layers
+    vol = _printed_volume(model)
+    assert vol == pytest.approx(part.volume, rel=0.03)          # nothing lost
+    s2 = build_strategy("custom_expr", trimesh.Trimesh(), model.metadata)
+    assert s2.pre_layers == s.pre_layers and s2.start_z == pytest.approx(s.start_z) and s2.first_z == pytest.approx(s.first_z)
+    # pre-layers exist only outside the footprint and keep the full-layer thickness
+    K = s.ramp_layers
+    for layer in model.layers:
+        if K <= layer.layer_index < K + s.pre_layers:
+            xs = np.abs([p[0] for c in layer.contours for p in c.points]); ys = np.abs([p[1] for c in layer.contours for p in c.points])
+            assert (np.maximum(xs, ys) >= 10 - 1e-6).all()
+            assert np.allclose([t for c in layer.contours for t in c.thicknesses], 0.2)
+
+
+def test_a_face_exactly_in_the_slice_plane_still_gives_closed_loops():
+    # Part69: its slab top (z = 7.5) lies exactly in the mid-plane of layer 37 (0.1 + 0.2 * 37); without the
+    # nudge the section is a closed loop plus two open 3-point fragments ("skipping an open contour")
+    mesh = trimesh.load(os.path.join(os.path.dirname(__file__), "data", "part69_coplanar_face.stl"))
+    model = PluginRegistry.get_plugin("universal_field_slicer")().slice(mesh, {"strategy": "planar", "layer_height": 0.2})
+    layer = next(l for l in model.layers if l.layer_index == 37)
+    assert layer.contours
+    for l in model.layers:
+        for c in l.contours:
+            assert c.points[0] == pytest.approx(c.points[-1], abs=1e-6), f"open contour in layer {l.layer_index}"
