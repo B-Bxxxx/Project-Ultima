@@ -27,6 +27,11 @@ the footprint and only where its surface is at least one layer height above the 
 the foot, each layer resting on the previous one. Global indices: 0 .. K-1 ramp, K .. K+P-1 pre-layers,
 K+P first full layer, then the rest. `first_z` is the surface level of the first full layer; the base
 class's `start_z` is lowered by P layers so the common maths stays unchanged.
+
+The first full layer touches the bed (one layer height above it) at the FARTHEST point of the footprint, not
+of the whole mesh: with `ramp_contact_only` the ramp is the small wedge under that layer. Every function layer
+whose surface still dips below the bed somewhere outside the footprint (z' < `clear_z`) is clipped to the
+region where it is at least one layer height above the bed.
 """
 from typing import Any, Dict, Optional, Tuple
 
@@ -76,6 +81,7 @@ class RampMixin:
         self.ramp_contact_only = bool(p.get("ramp_contact_only", True))
         self._footprint: Optional[BaseGeometry] = None
         self.pre_layers = 0
+        self.clear_z = 0.0
         self._source = mesh.copy()
         self._regions: Dict[int, Any] = {}
         self._grid = None
@@ -92,12 +98,17 @@ class RampMixin:
         elif len(self.mesh.vertices) > 0:
             self.ramp_base_z = float(self._source.bounds[0, 2])
             f = self._f(self.mesh.vertices[:, 0], self.mesh.vertices[:, 1])
-            self.start_z = self.ramp_base_z + h + float(f.max())        # lowest surface point = one layer above the bed
-            f_min = float(f.min())
+            # lowest point of the first full layer = one layer above the bed - over the CONTACT SURFACE only
+            # (the whole mesh when the ramp is built everywhere): the first function layer touches the bed at the
+            # farthest point of the footprint; everything else lies outside it and is built by the function.
+            f_min, f_max = float(f.min()), float(f.max())
+            self.clear_z = self.ramp_base_z + h + f_max                  # from this z' on every layer is above the bed everywhere
             if self.ramp_contact_only:
                 self._footprint = contact_footprint(self._source, self.ramp_base_z)
-                if self._footprint is not None:                          # the ramp only has to reach the surface over the contact area
-                    f_min = float(self._f_over(self._footprint).min())
+                if self._footprint is not None:
+                    f_foot = self._f_over(self._footprint)
+                    f_min, f_max = float(f_foot.min()), float(f_foot.max())
+            self.start_z = self.ramp_base_z + h + f_max
             top = self.start_z - f_min
             self.ramp_layers = max(0, int(np.floor((top - self.ramp_min_gap - self.ramp_base_z) / self.ramp_layer_height + 1e-9)))
             self.first_z = self.start_z
@@ -206,13 +217,17 @@ class RampMixin:
                 X, Y, self.first_z - F - level, lambda x, y: float(self.first_z - self._f(np.array(x), np.array(y)) - level))
             if self._footprint is not None and region is not None and not region.is_empty:
                 region = region.intersection(self._footprint)
-        elif self._is_pre(layer_idx):
-            X, Y, F = self._region_grid()
+        elif layer_idx >= self.ramp_layers:
+            # function layers (pre-layers and full layers): partial while their surface still dips below the bed
+            # somewhere (outside the footprint, where the function takes over from the ramp)
             zp = self.start_z + (layer_idx - self.ramp_layers) * self.layer_height     # z' of the layer top
+            if zp >= self.clear_z - 1e-9 and not self._is_pre(layer_idx):
+                return None
+            X, Y, F = self._region_grid()
             level = self.ramp_base_z + self.layer_height                               # surface at least one layer above the bed
             region = region_polygon(
                 X, Y, zp - F - level, lambda x, y: float(zp - self._f(np.array(x), np.array(y)) - level))
-            if self._footprint is not None and region is not None and not region.is_empty:
+            if self._is_pre(layer_idx) and self._footprint is not None and region is not None and not region.is_empty:
                 region = region.difference(self._footprint)                            # under the footprint the ramp is built
         else:
             return None

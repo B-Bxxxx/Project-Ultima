@@ -274,3 +274,29 @@ def test_a_face_exactly_in_the_slice_plane_still_gives_closed_loops():
     for l in model.layers:
         for c in l.contours:
             assert c.points[0] == pytest.approx(c.points[-1], abs=1e-6), f"open contour in layer {l.layer_index}"
+
+
+def _cross():
+    def box(w, d, h, z):
+        b = trimesh.creation.box(extents=(w, d, h)); b.apply_translation((0, 0, z)); return b
+    return trimesh.util.concatenate([box(20, 20, 10, 5), box(40, 20, 20, 20), box(20, 20, 10, 35)])
+
+
+def test_first_function_layer_touches_the_bed_at_the_farthest_point_of_the_footprint():
+    # any geometry: the ramp is only the wedge under the contact surface, everything else is built by the function
+    part = _cross()
+    prm = {**RAMP, "strategy": "custom_expr", "expression": "r*tan(radians(45))", "layer_height": 0.2}
+    s = build_strategy("custom_expr", part, prm)
+    r_foot = np.hypot(10, 10)                                     # farthest footprint corner
+    assert s.first_z - r_foot == pytest.approx(0.2, abs=0.02)     # first layer: one layer height above the bed there
+    assert s.first_z < s.clear_z                                  # the arm tips would dip below the bed -> partial layers
+    # the ramp stops at the first function layer: no ramp layer above its surface at the footprint centre
+    assert s._ramp_top(s.ramp_layers - 1) <= s.first_z - 0.1 + 1e-6
+    # without contact-only the ramp goes everywhere (old behaviour): first layer set by the whole mesh
+    off = build_strategy("custom_expr", part, {**prm, "ramp_contact_only": False})
+    assert off.first_z == pytest.approx(off.clear_z) and off.first_z > s.first_z + 5
+    model = _slice(prm, part)
+    K = s.ramp_layers + s.pre_layers
+    low = min(p[2] for l in model.layers if l.layer_index >= K for c in l.contours for p in c.points)
+    assert low >= 0.1 - 1e-6                                      # no function layer is printed below the bed
+    assert any(l.layer_index == K for l in model.layers)          # the first function layer exists
