@@ -30,7 +30,7 @@ FORMAT = "cam-machine"
 VERSION = 1
 PLANAR = "planar_3axis_xyz"
 VALID_AXES = ("X", "Y", "Z", "B", "C")
-CONFIG_FIELDS = ("pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
+CONFIG_FIELDS = ("c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
                  "b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max", "max_3axis_tilt_deg")
 ROTARY_REQUIRED = ("b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max")
 
@@ -74,6 +74,28 @@ class MachineSpec:
             size, room = max(vals) - min(vals), float(lim[1]) - float(lim[0])
             if size > room + 1e-6:
                 msgs.append(f"the part is {size:.1f} mm in {axis.upper()}, the build volume only {room:.1f} mm")
+        return msgs
+
+    def range_warnings(self, states) -> list:
+        """
+        Non-blocking check of the MACHINE coordinates (Stage 3 output, travel moves included) against the
+        linear axis range given in `build_volume` (e.g. X 0..220: the end stop is at 0, Klipper refuses to
+        move below it). Returns one message per axis that leaves its range; empty = all inside.
+        """
+        if not self.build_volume or not states:
+            return []
+        msgs = []
+        for axis in "xyz":
+            lim = self.build_volume.get(axis)
+            if not lim:
+                continue
+            lo, hi = float(lim[0]), float(lim[1])
+            vals = [getattr(s, axis) for s in states]
+            vmin, vmax = min(vals), max(vals)
+            if vmin < lo - 1e-6 or vmax > hi + 1e-6:
+                bad = next(s for s in states if getattr(s, axis) < lo - 1e-6 or getattr(s, axis) > hi + 1e-6)
+                msgs.append(f"{axis.upper()} runs {vmin:.1f}..{vmax:.1f} mm, the machine range is {lo:g}..{hi:g} mm "
+                            f"(first at layer {bad.layer_index}): move the part origin / table centre (c_axis_{axis}) or shrink the part")
         return msgs
 
     @classmethod

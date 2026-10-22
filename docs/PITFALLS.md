@@ -78,3 +78,9 @@ Problems and traps met while building the pipeline - raw material for the docume
 * `pipeline_cli.py` is unused by the author and still hardcodes a 10x10 cylinder and the old machine config; it is not maintained (decision: leave it).
 
 * Ramp contact-only without pre-layers dropped overhang material below the first full layer (Part69: ~1650 mm3 of 26900) - fixed with pre-layers. Slicing in a plane that contains a flat face gave open contours ("skipping an open contour") - fixed by nudging the plane. Known limit: non-contact material lower than one layer height above the bed (e.g. a chamfered underside) is not printed by the pre-layers.
+
+## Machine origin / rotary axis position (`c_axis_x/y/z`)
+- Optional machine parameters (default 0 = old behaviour): machine position of the C axis (table centre) at B = 0. The part-frame origin lies there; Placement offsets are relative to it. Trunnion: `machine = B_axis + R_B · (c_axis + R_C · part − B_axis)` – the offset is applied BEFORE the B tilt (it rotates with B). B axis = `pivot_offset_*`.
+- 3-axis / swivel head: `c_axis_*` is simply the machine position of the part origin on the bed.
+- `MachineSpec.range_warnings(states)` compares all machine states (travel included) with `build_volume` (e.g. X 0..220, Klipper cannot go below the end stop); non-blocking, shown as "Warning (machine range)" in the GUI note and logged.
+- G-code format is unchanged.

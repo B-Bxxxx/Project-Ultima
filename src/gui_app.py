@@ -1445,6 +1445,11 @@ class MainWindow(QMainWindow):
                     note += "\nWarning (measured): " + chk.tilt_warning
             if fit:
                 note += "\nWarning (build volume): " + "; ".join(fit)
+            rng = mspec.range_warnings(self.stage3_traj.states)
+            if rng:
+                for msg in rng:
+                    logger.warning("Machine range: %s", msg)
+                note += "\nWarning (machine range): " + "; ".join(rng)
             self.lbl_metrics.setText(f"Done in {dt:.2f}s | Layers: {self._layer_total()} | Pts: {pts}{note}")
             self.update_viewport()
 

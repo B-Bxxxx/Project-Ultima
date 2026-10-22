@@ -12,6 +12,21 @@
     "C"
   ],
   "parameters": {
+    "c_axis_x": {
+      "label": "C axis X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_y": {
+      "label": "C axis Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_z": {
+      "label": "C axis Z (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
     "b_axis_min": {
       "label": "B min",
       "unit": "deg",
@@ -41,17 +56,17 @@
       "max": 360000.0
     },
     "pivot_offset_x": {
-      "label": "Pivot X",
+      "label": "B axis X (machine)",
       "unit": "mm",
       "default": 0.0
     },
     "pivot_offset_y": {
-      "label": "Pivot Y",
+      "label": "B axis Y (machine)",
       "unit": "mm",
       "default": 0.0
     },
     "pivot_offset_z": {
-      "label": "Pivot Z",
+      "label": "B axis Z (machine)",
       "unit": "mm",
       "default": 0.0
     },

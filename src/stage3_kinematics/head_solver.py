@@ -85,7 +85,7 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             # (Where P_pivot is distance from pivot to tool tip)
             offset = P_pivot - R_C @ (R_B @ P_pivot)
 
-            P_mach = P + offset
+            P_mach = P + offset + np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])    # part origin on the bed
 
             state = MachineStateVector(
                 x=float(P_mach[0]), y=float(P_mach[1]), z=float(P_mach[2]),
@@ -125,7 +125,7 @@ class Cartesian3AxisSolver(BaseKinematicSolver):
                     warned = True
 
             state = MachineStateVector(
-                x=wp.x, y=wp.y, z=wp.z,
+                x=wp.x + config.c_axis_x, y=wp.y + config.c_axis_y, z=wp.z + config.c_axis_z,
                 b=0.0, c=0.0,
                 tool_alignment=tool_alignment(wp, (0.0, 0.0, 1.0)),      # the nozzle of a 3-axis machine is always vertical
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,

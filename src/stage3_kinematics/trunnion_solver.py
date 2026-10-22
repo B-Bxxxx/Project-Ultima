@@ -18,6 +18,7 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
         # Unpack configurations
         px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
         ex, ey = config.eccentricity_x, config.eccentricity_y
+        c_axis = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])      # machine position of the C axis (B = 0)
         b_min, b_max = config.b_axis_min, config.b_axis_max
         c_min, c_max = config.c_axis_min, config.c_axis_max
 
@@ -119,7 +120,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
 
             # Kinematic chain order for Trunnion (Bed -> C -> B):
             # First rotate by C around origin
-            P_c = R_C @ P_e
+            # (the C axis sits at c_axis in the cradle frame, so it moves with the B tilt: the offset comes BEFORE B)
+            P_c = c_axis + R_C @ P_e
 
             # Then tilt by B around pivot
             V_pivot = P_c - P_pivot
