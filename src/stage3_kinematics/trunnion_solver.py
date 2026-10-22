@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver, tool_alignment
+from src.stage3_kinematics.base import BaseKinematicSolver, resolve_c_angles, tool_alignment
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 @KinematicsRegistry.register("trunnion_table_xyzbc")
@@ -75,9 +75,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
             b_angles.append(b_deg)
             valid_waypoints.append(wp)
 
-        # Unwrap C angles
-        unwrapped_c_rad = np.unwrap(raw_c_angles)
-        c_angles = np.degrees(unwrapped_c_rad)
+        # C continuous inside a move chain, re-chosen closest to zero at the start of each chain
+        c_angles = resolve_c_angles(raw_c_angles, b_angles, valid_waypoints, c_min, c_max)
 
         # Second pass: Compute Machine XYZ taking into account pivot offsets and eccentricity
         for idx, wp in enumerate(valid_waypoints):

@@ -84,3 +84,8 @@ Problems and traps met while building the pipeline - raw material for the docume
 - 3-axis / swivel head: `c_axis_*` is simply the machine position of the part origin on the bed.
 - `MachineSpec.range_warnings(states)` compares all machine states (travel included) with `build_volume` (e.g. X 0..220, Klipper cannot go below the end stop); non-blocking, shown as "Warning (machine range)" in the GUI note and logged.
 - G-code format is unchanged.
+
+## C axis winding (Stage 3)
+- The raw C angle (atan2 of the surface normal) turns once per ring on a conical/rotationally symmetric function. `np.unwrap` over the whole path piled this up (~1000 deg per layer) until the C limit was hit and the part was destroyed (negative Z).
+- `stage3_kinematics.base.resolve_c_angles`: C is continuous inside one move chain; at the start of every new chain (a travel move: new ring, wall chain, infill line) it is re-chosen as the equivalent angle (+-360 deg) closest to zero inside `c_axis_min/max` - the rotation is undone during the travel. Below 0.5 deg tilt C keeps its previous value (singularity). If a chain needs more rotation than the limits allow, the C angle is clamped and a warning is logged.
+- Skirt and brim always carry the nominal `layer_height`; they are not scaled with the function's local gap (standard mode compresses the first layers: gap = h*(1-f/transition_height), floor 0.01 mm).

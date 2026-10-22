@@ -529,6 +529,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                     pts = [(x, y, _layer.z_height) for x, y in subdivided]
                     normals = [(0.0, 0.0, 1.0)] * len(pts)
                     thicknesses = [profile.layer_height] * len(pts)
+                if f_type in ("skirt", "brim"):
+                    thicknesses = [float(profile.layer_height)] * len(pts)     # on the bed: the nominal bead, not the function's local gap
                 tol = profile.infill_path_tolerance if f_type == "infill" else profile.path_tolerance
                 if tol > 0.0 and len(pts) > 2:
                     keep, h_eff = simplify_path(pts, normals, thicknesses, tol, profile.min_segment_length,
