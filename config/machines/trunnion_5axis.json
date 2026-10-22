@@ -27,6 +27,22 @@
       "unit": "mm",
       "default": 0.0
     },
+    "b_axis_dir": {
+      "label": "B direction (+1 / -1)",
+      "unit": "",
+      "default": 1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 2.0
+    },
+    "c_axis_dir": {
+      "label": "C direction (+1 / -1)",
+      "unit": "",
+      "default": 1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 2.0
+    },
     "b_axis_min": {
       "label": "B min",
       "unit": "deg",

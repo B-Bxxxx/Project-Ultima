@@ -159,6 +159,8 @@ class MachineConfig(BaseModel):
     c_axis_z: float = Field(0.0, description="Machine Z of the table surface at the C axis at B = 0 / of the part origin")
     eccentricity_x: float = Field(0.0, description="C-axis eccentricity X in mm")
     eccentricity_y: float = Field(0.0, description="C-axis eccentricity Y in mm")
+    b_axis_dir: float = Field(1.0, description="+1: the machine's positive B turns like the program's (seen from the front, clockwise); -1: opposite. Applied to the B value written to the G-code")
+    c_axis_dir: float = Field(1.0, description="+1: the machine's positive C turns like the program's (seen from above, counter-clockwise); -1: opposite")
     b_axis_min: float = Field(..., description="Minimum B-axis angle in degrees")
     b_axis_max: float = Field(..., description="Maximum B-axis angle in degrees")
     c_axis_min: float = Field(..., description="Minimum C-axis angle in degrees")

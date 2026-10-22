@@ -20,7 +20,13 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
         ex, ey = config.eccentricity_x, config.eccentricity_y
         c_axis = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])      # machine position of the C axis (B = 0)
         b_min, b_max = config.b_axis_min, config.b_axis_max
+        b_sign = -1.0 if config.b_axis_dir < 0 else 1.0           # direction of the machine's B / C relative to the program's
+        c_sign = -1.0 if config.c_axis_dir < 0 else 1.0
         c_min, c_max = config.c_axis_min, config.c_axis_max
+        if b_sign < 0:
+            b_min, b_max = -b_max, -b_min
+        if c_sign < 0:
+            c_min, c_max = -c_max, -c_min
 
         # We need to compute C angles and unwrap them to prevent 360-degree flips
         raw_c_angles = []
@@ -133,8 +139,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 x=float(P_mach[0]),
                 y=float(P_mach[1]),
                 z=float(P_mach[2]),
-                b=float(b_deg),
-                c=float(c_deg),
+                b=float(b_deg * b_sign) + 0.0,
+                c=float(c_deg * c_sign) + 0.0,
                 tool_alignment=tool_alignment(wp, (-np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume,
                 feedrate=wp.feedrate,

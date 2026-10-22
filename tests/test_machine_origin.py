@@ -62,3 +62,19 @@ def test_machine_files_expose_c_axis_params():
         spec = load_machine_file(f"config/machines/{f}.json")
         vals = {p.key: p.default for p in spec.params} if hasattr(spec, "params") else {}
         assert not vals or "c_axis_x" in vals
+
+
+def test_axis_direction_flips_the_written_b_and_c_and_their_limits():
+    n = (-np.sin(np.radians(20)) * np.cos(np.radians(30)), np.sin(np.radians(20)) * np.sin(np.radians(30)), np.cos(np.radians(20)))
+    pos = TrunnionXYZBCSolver().solve(_traj(*n), _cfg()).states[0]
+    neg = TrunnionXYZBCSolver().solve(_traj(*n), _cfg(b_axis_dir=-1, c_axis_dir=-1)).states[0]
+    assert (neg.b, neg.c) == pytest.approx((-pos.b, -pos.c))
+    assert (neg.x, neg.y, neg.z) == pytest.approx((pos.x, pos.y, pos.z))     # the geometry is unchanged
+    # a limit given in the machine's direction: B -10..90 with dir -1 allows program B 10..-90, i.e. machine B -10 is fine
+    lim = TrunnionXYZBCSolver().solve(_traj(*n), _cfg(b_axis_dir=-1, b_axis_min=-90, b_axis_max=0)).states[0]
+    assert lim.b == pytest.approx(-20.0, abs=1e-6)
+
+
+def test_zero_is_never_written_as_minus_zero():
+    s = TrunnionXYZBCSolver().solve(_traj(), _cfg(b_axis_dir=-1, c_axis_dir=-1)).states[0]
+    assert str(s.b) == "0.0" and str(s.c) == "0.0"

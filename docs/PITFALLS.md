@@ -89,3 +89,7 @@ Problems and traps met while building the pipeline - raw material for the docume
 - The raw C angle (atan2 of the surface normal) turns once per ring on a conical/rotationally symmetric function. `np.unwrap` over the whole path piled this up (~1000 deg per layer) until the C limit was hit and the part was destroyed (negative Z).
 - `stage3_kinematics.base.resolve_c_angles`: C is continuous inside one move chain; at the start of every new chain (a travel move: new ring, wall chain, infill line) it is re-chosen as the equivalent angle (+-360 deg) closest to zero inside `c_axis_min/max` - the rotation is undone during the travel. Below 0.5 deg tilt C keeps its previous value (singularity). If a chain needs more rotation than the limits allow, the C angle is clamped and a warning is logged.
 - Skirt and brim always carry the nominal `layer_height`; they are not scaled with the function's local gap (standard mode compresses the first layers: gap = h*(1-f/transition_height), floor 0.01 mm).
+
+## Axis directions (`b_axis_dir`, `c_axis_dir`)
+- Program convention (facing the printer, X right, Y away, Z up): positive C = counter-clockwise seen from above (the near half of the table moves right, +X); positive B = clockwise seen from the front (the table top tilts toward +X).
+- `b_axis_dir` / `c_axis_dir` = +1 or -1 in the machine file: only the B/C VALUE written to the G-code is multiplied (limits `*_axis_min/max` are in the machine's direction); X/Y/Z and the geometry do not change. Set -1 if the real axis turns the other way.
