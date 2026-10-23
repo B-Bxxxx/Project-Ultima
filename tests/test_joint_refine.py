@@ -81,3 +81,27 @@ def test_off_and_non_rotary_are_unchanged():
 
 def test_default_tolerance_applies_to_the_machine_config():
     assert MachineConfig(kinematic_chain="x", b_axis_min=0, b_axis_max=1, c_axis_min=0, c_axis_max=1).joint_tolerance == 0.02
+
+
+def test_c_does_not_jump_where_the_tilt_is_small():
+    """Cone layer with a tilt of 0.3-0.8 deg: no C jump inside a segment, and the deposit stays inside the tolerance."""
+    import trimesh
+    from src.common.schemas import MinimalPrintProfile
+    from src.stage1_slicer.registry import PluginRegistry
+    from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
+    m = trimesh.creation.cylinder(radius=8, height=2, sections=32)
+    m.apply_translation((0, 0, 1))
+    p = {"strategy": "custom_expr", "expression": "0.4*np.sqrt(x**2+y**2)", "expression_params": {},
+         "layer_height": 0.2, "transition_height": 10.0}
+    model = PluginRegistry.get_plugin("universal_field_slicer")().slice(m, p)
+    prof = MinimalPrintProfile(layer_height=0.2, nozzle_diameter=0.4, num_perimeters=2, infill_density=0.15,
+                               bottom_solid_layers=2, top_solid_layers=2)
+    traj = StandardToolpathGenerator().generate_toolpath(model, prof)
+    cfg = _cfg(joint_tolerance=0.02)
+    s = TrunnionXYZBCSolver()
+    ref = solve_refined(s, traj, cfg)
+    st = ref.states
+    small = [q for q in st if 0.1 < q.b < 1.0]
+    assert small                                                                # the layers of interest exist
+    jumps = [abs(b.c - a.c) for a, b in zip(st[:-1], st[1:]) if not b.is_travel_move and a.b < 1.0 and b.b < 1.0]
+    assert max(jumps) < 90.0

@@ -13,7 +13,8 @@ def tool_alignment(wp, tool_axis) -> float:
     return float(np.clip(np.dot(n, d) / (nn * dn), -1.0, 1.0))
 
 
-C_HOLD_B_DEG = 0.5          # below this tilt C is meaningless (singularity): it keeps its previous value
+C_HOLD_B_DEG = 0.006        # below this tilt (the 1e-4 rad of the solvers) C is undefined: it keeps its previous value. A larger
+                            # threshold makes C jump where B crosses it and the firmware then spins the table inside one segment
 
 
 def resolve_c_angles(raw_c_rad, b_deg, waypoints, c_min: float, c_max: float, hold_b_deg: float = C_HOLD_B_DEG):

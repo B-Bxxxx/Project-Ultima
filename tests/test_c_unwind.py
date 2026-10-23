@@ -33,9 +33,11 @@ def test_start_of_chain_respects_limits_and_picks_the_nearest_to_zero():
     assert c[0] == pytest.approx(190.0)
 
 
-def test_tiny_tilt_holds_the_previous_c_and_too_small_a_range_warns(caplog):
-    c = resolve_c_angles([np.radians(40.0), np.radians(-100.0)], [20, 0.1], [W(True), W(False)], -36000, 36000)
+def test_vertical_normal_holds_the_previous_c_a_small_tilt_does_not_and_too_small_a_range_warns(caplog):
+    c = resolve_c_angles([np.radians(40.0), np.radians(-100.0)], [20, 0.001], [W(True), W(False)], -36000, 36000)
     assert c == [pytest.approx(40.0), pytest.approx(40.0)]
+    c = resolve_c_angles([np.radians(40.0), np.radians(-100.0)], [20, 0.2], [W(True), W(False)], -36000, 36000)
+    assert c[1] == pytest.approx(-100.0)                                       # 0.2 deg of tilt: C follows the normal
     with caplog.at_level(logging.WARNING):
         resolve_c_angles([np.radians(0.0), np.radians(90.0), np.radians(180.0), np.radians(-90.0), np.radians(0.0)] + [np.radians(90.0)] * 6,
                          [20] * 11, [W(True)] + [W(False)] * 10, -10.0, 10.0)

@@ -87,7 +87,7 @@ Problems and traps met while building the pipeline - raw material for the docume
 
 ## C axis winding (Stage 3)
 - The raw C angle (atan2 of the surface normal) turns once per ring on a conical/rotationally symmetric function. `np.unwrap` over the whole path piled this up (~1000 deg per layer) until the C limit was hit and the part was destroyed (negative Z).
-- `stage3_kinematics.base.resolve_c_angles`: C is continuous inside one move chain; at the start of every new chain (a travel move: new ring, wall chain, infill line) it is re-chosen as the equivalent angle (+-360 deg) closest to zero inside `c_axis_min/max` - the rotation is undone during the travel. Below 0.5 deg tilt C keeps its previous value (singularity). If a chain needs more rotation than the limits allow, the C angle is clamped and a warning is logged.
+- `stage3_kinematics.base.resolve_c_angles`: C is continuous inside one move chain; at the start of every new chain (a travel move: new ring, wall chain, infill line) it is re-chosen as the equivalent angle (+-360 deg) closest to zero inside `c_axis_min/max` - the rotation is undone during the travel. Only at an (almost) exactly vertical normal (< 0.006 deg tilt) C keeps its previous value (singularity); a larger hold threshold (it was 0.5 deg) makes C jump where B crosses it - the firmware then spins the table inside one segment and deposits loops (layers 2-5 of a cone). If a chain needs more rotation than the limits allow, the C angle is clamped and a warning is logged.
 - Skirt and brim always carry the nominal `layer_height`; they are not scaled with the function's local gap (standard mode compresses the first layers: gap = h*(1-f/transition_height), floor 0.01 mm).
 
 ## Axis directions (`b_axis_dir`, `c_axis_dir`)
