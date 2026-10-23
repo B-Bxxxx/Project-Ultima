@@ -151,3 +151,17 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
             states.append(state)
 
         return MachineTrajectory(states=states)
+
+    def to_part_batch(self, config: MachineConfig, poses):
+        """Inverse of solve(): P = R_C^T (R_B^T (M - pivot) + pivot - c_axis) - eccentricity."""
+        S = np.asarray(poses, float).reshape(-1, 5)
+        b = np.radians(S[:, 3] * (-1.0 if config.b_axis_dir < 0 else 1.0))
+        c = np.radians(S[:, 4] * (-1.0 if config.c_axis_dir < 0 else 1.0))
+        pv = np.array([config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z])
+        ca = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])
+        v = S[:, :3] - pv
+        cb, sb, cc, sc = np.cos(b), np.sin(b), np.cos(c), np.sin(c)
+        u = np.column_stack([cb * v[:, 0] - sb * v[:, 2], v[:, 1], sb * v[:, 0] + cb * v[:, 2]]) + pv - ca
+        return np.column_stack([cc * u[:, 0] + sc * u[:, 1] - config.eccentricity_x,
+                                -sc * u[:, 0] + cc * u[:, 1] - config.eccentricity_y,
+                                u[:, 2]])

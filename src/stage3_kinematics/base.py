@@ -59,6 +59,14 @@ class BaseKinematicSolver(ABC):
     Abstract Base Class for Stage 3: Kinematic Solver.
     """
 
+    def to_part_batch(self, config: MachineConfig, poses):
+        """
+        Inverse of solve() for the pose arrays (n, 5) = [x, y, z, b, c] as written to the G-code: where on the PART the
+        nozzle tip is. Used to check the straight-line axis interpolation between two points. None = not available
+        (the solver is then never refined).
+        """
+        return None
+
     @abstractmethod
     def solve(self, trajectory: CLDataTrajectory, config: MachineConfig) -> MachineTrajectory:
         """

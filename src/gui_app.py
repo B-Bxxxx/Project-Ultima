@@ -39,6 +39,7 @@ from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 from src.stage3_kinematics.machine_file import (
     MachineFileError, MachineSpec, load_machine_dir, load_machine_file, save_machine_file,
 )
+from src.stage3_kinematics.refine import solve_refined
 from src.stage3_kinematics.registry import KinematicsRegistry
 from src.stage4_postproc.klipper_postproc import Klipper5AxisPostProcessor
 
@@ -1426,7 +1427,7 @@ class MainWindow(QMainWindow):
             self.stage2_traj = StandardToolpathGenerator().generate_toolpath(self.stage1_model, prof)
 
             solver_cls = KinematicsRegistry.get_solver(mspec.kinematics)
-            self.stage3_traj = solver_cls().solve(self.stage2_traj, machine_cfg)
+            self.stage3_traj = solve_refined(solver_cls(), self.stage2_traj, machine_cfg)
 
             self.gcode = Klipper5AxisPostProcessor().generate_gcode(self.stage3_traj, prof)
             self.txt_gcode.setPlainText(self.gcode)

@@ -104,6 +104,19 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
 
         return MachineTrajectory(states=states)
 
+    def to_part_batch(self, config: MachineConfig, poses):
+        """Inverse of solve(): P = M - (pivot - R_C R_B pivot) - c_axis."""
+        S = np.asarray(poses, float).reshape(-1, 5)
+        b = np.radians(S[:, 3] * (-1.0 if config.b_axis_dir < 0 else 1.0))
+        c = np.radians(S[:, 4] * (-1.0 if config.c_axis_dir < 0 else 1.0))
+        px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
+        cb, sb, cc, sc = np.cos(b), np.sin(b), np.cos(c), np.sin(c)
+        ax, ay, az = cb * px + sb * pz, py, -sb * px + cb * pz            # R_B pivot
+        rx, ry, rz = cc * ax - sc * ay, sc * ax + cc * ay, az              # R_C R_B pivot
+        off = np.column_stack([px - rx, py - ry, pz - rz])
+        return S[:, :3] - off - np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])
+
+
 @KinematicsRegistry.register("planar_3axis_xyz")
 class Cartesian3AxisSolver(BaseKinematicSolver):
     """

@@ -93,3 +93,9 @@ Problems and traps met while building the pipeline - raw material for the docume
 ## Axis directions (`b_axis_dir`, `c_axis_dir`)
 - Program convention (facing the printer, X right, Y away, Z up): positive C = counter-clockwise seen from above (the near half of the table moves right, +X); positive B = clockwise seen from the front (the table top tilts toward +X).
 - `b_axis_dir` / `c_axis_dir` = +1 or -1 in the machine file: only the B/C VALUE written to the G-code is multiplied (limits `*_axis_min/max` are in the machine's direction); X/Y/Z and the geometry do not change. Set -1 if the real axis turns the other way.
+
+## Joint-space interpolation (Stage 3 `refine.py`, `joint_tolerance`)
+- The firmware moves between two G-code points with X, Y, Z, B and C all changing LINEARLY in time. On a straight part-frame segment along which C (or B) changes a lot (an infill line or a wall near the centre of a cone, where C follows the azimuth) the nozzle therefore deposits an arc: the layer showed swirling infill and notched walls (test "5P-1", layer 2: median 0.3 mm, p90 1 mm, max 3.6 mm off).
+- `stage3_kinematics.refine.solve_refined` (used by the GUI and the CLI instead of `solver.solve`): solves, measures the deviation in the PART frame at 1/4, 1/2, 3/4 of every extruding segment through the solver's inverse (`to_part_batch`), splits the segments over `joint_tolerance` (machine file parameter, default 0.02 mm, 0 = off) at their midpoint (volume halved, layer/feature kept) and solves again (max 14 rounds, point-count guard, warning if it stops early). Travel moves and 3-axis machines are not touched.
+- Cost: more G-code points where C changes fast (a cone of r=15: 35k -> 66k points, ~20 s for the refinement).
+- Solvers that cannot be inverted (`to_part_batch` returns None) are never refined.
