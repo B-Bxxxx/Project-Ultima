@@ -23,6 +23,12 @@ Product of exponentials: T_branch = T_1(q_1) T_2(q_2) ... T_n(q_n), every T_j bu
 Position of the nozzle tip in the base frame:  T_tool(tip).  Position of a part point P:  T_table(P + part_origin).
 The nozzle axis (zero pose `tool_axis`) must lie along the layer normal N (part frame):  R_tool tool_axis = R_table N.
 
+Two equivalent ways to write a chain:
+  * list form:   "tool": [joints...], "table": [joints...]   (X, Y, Z written out as linear joints)
+  * nested form: "head": {"A": {..., "carries": {"B": {...}}}}, "table": {...}   (the hierarchy is the indentation; a missing
+    or empty section is left out; X, Y, Z are implicit, outermost on the head, signs from "linear_signs": [1,1,1];
+    "limits": [min, max] replaces "min"/"max"). Both give the same Chain.
+
 Every number may be an expression of the machine file's parameters ("-pivot_offset_x", "c_axis_x + eccentricity_x").
 """
 import ast
@@ -136,15 +142,22 @@ class Chain:
         params = params or {}
         if not isinstance(raw, dict):
             raise ChainError(f'{where}"chain" must be an object')
-        extra = set(raw) - {"tool", "table", "part_origin", "tip", "tool_axis"}
+        extra = set(raw) - {"head", "tool", "table", "part_origin", "tip", "tool_axis", "linear_signs"}
         if extra:
             raise ChainError(f'{where}unknown "chain" field(s) {sorted(extra)}')
-        branches = []
-        for key in ("tool", "table"):
-            lst = raw.get(key, [])
-            if not isinstance(lst, list):
-                raise ChainError(f'{where}"chain.{key}" must be a list of joints')
-            branches.append([cls._joint(j, params, f"{where}chain.{key}[{i}]: ") for i, j in enumerate(lst)])
+        if "tool" not in raw and not isinstance(raw.get("table"), list):
+            raw_branches = cls._nested_branches(raw, params, where)
+        else:
+            if "linear_signs" in raw:
+                raise ChainError(f'{where}"linear_signs" belongs to the "head"/"table" form (the list form has the linear joints itself)')
+            raw_branches = []
+            for key in ("tool", "table"):
+                lst = raw.get(key, [])
+                if not isinstance(lst, list):
+                    raise ChainError(f'{where}"chain.{key}" must be a list of joints')
+                raw_branches.append(lst)
+        branches = [[cls._joint(j, params, f"{where}chain.{key}[{i}]: ") for i, j in enumerate(lst)]
+                    for key, lst in zip(("tool", "table"), raw_branches)]
         ch = cls(tool=branches[0], table=branches[1],
                  part_origin=_vec(raw.get("part_origin"), params, f"{where}chain.part_origin ", default=[0, 0, 0]),
                  tip=_vec(raw.get("tip"), params, f"{where}chain.tip ", default=[0, 0, 0]),
@@ -153,9 +166,59 @@ class Chain:
         return ch
 
     @staticmethod
+    def _flatten(section: Any, where: str) -> List[Dict[str, Any]]:
+        """{"A": {..., "carries": {"B": {...}}}} -> [joint(A), joint(B)], outermost first. One joint per level."""
+        out: List[Dict[str, Any]] = []
+        node = section
+        while node:
+            if not isinstance(node, dict):
+                raise ChainError(f'{where}expected an object like {{"A": {{...}}}}')
+            if len(node) > 1:
+                raise ChainError(f"{where}two axes on the same level ({sorted(node)}): independent siblings are not supported yet "
+                                 f'- put one into the other\'s "carries" (the order only matters when their axis lines do not meet)')
+            (axis, body), = node.items()
+            if axis not in AXIS_NAMES:
+                raise ChainError(f"{where}'{axis}' is not an axis name {list(AXIS_NAMES)}")
+            body = dict(body or {})
+            if not isinstance(body, dict):
+                raise ChainError(f"{where}axis {axis} must be an object")
+            node = body.pop("carries", None)
+            joint = {"axis": axis, "type": "linear" if axis in LINEAR_NAMES else "rotary", **body}
+            if axis in LINEAR_NAMES and "direction" not in joint:
+                joint["direction"] = [1.0 if a == axis else 0.0 for a in LINEAR_NAMES]
+            out.append(joint)
+        return out
+
+    @classmethod
+    def _nested_branches(cls, raw, params, where):
+        """The "head" / "table" form: returns the (tool, table) lists of joint objects. X, Y, Z are implicit unless written out."""
+        if "tool" in raw:
+            raise ChainError(f'{where}"tool" (list form) and "head"/"table" (nested form) cannot be mixed')
+        head = cls._flatten(raw.get("head"), f"{where}chain.head: ")
+        table = cls._flatten(raw.get("table"), f"{where}chain.table: ")
+        explicit = [j for j in head + table if j["type"] == "linear"]
+        if explicit:
+            if {j["axis"] for j in explicit} != set(LINEAR_NAMES) or "linear_signs" in raw:
+                raise ChainError(f'{where}write out all three of X, Y, Z (with "sign") or none of them (then they are implicit, '
+                                 f'outermost on the head, see "linear_signs")')
+            return head, table
+        signs = raw.get("linear_signs", [1, 1, 1])
+        if not isinstance(signs, (list, tuple)) or len(signs) != 3:
+            raise ChainError(f'{where}"linear_signs" must be 3 numbers (+1/-1 for X, Y, Z)')
+        lin = [{"axis": a, "type": "linear", "direction": list(d), "sign": sg}
+               for a, d, sg in zip(LINEAR_NAMES, ((1, 0, 0), (0, 1, 0), (0, 0, 1)), signs)]
+        return lin + head, table
+
+    @staticmethod
     def _joint(raw, params, where) -> Joint:
         if not isinstance(raw, dict):
             raise ChainError(f"{where}a joint must be an object")
+        raw = dict(raw)
+        if "limits" in raw:
+            lim = raw.pop("limits")
+            if "min" in raw or "max" in raw or not isinstance(lim, (list, tuple)) or len(lim) != 2:
+                raise ChainError(f'{where}"limits" must be [min, max] and replaces "min"/"max"')
+            raw["min"], raw["max"] = lim
         extra = set(raw) - {"axis", "type", "direction", "point", "origin", "sign", "min", "max", "continuous"}
         if extra:
             raise ChainError(f"{where}unknown joint field(s) {sorted(extra)}")

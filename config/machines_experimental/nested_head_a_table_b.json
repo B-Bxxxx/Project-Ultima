@@ -1,0 +1,114 @@
+{
+  "format": "cam-machine",
+  "version": 1,
+  "name": "Nested demo: head A, table B (Cartesian)",
+  "description": "A tilts the head about X, B tilts the table about Y.",
+  "kinematics": "generic_chain",
+  "axes": [
+    "X",
+    "Y",
+    "Z",
+    "A",
+    "B"
+  ],
+  "chain": {
+    "part_origin": [
+      "bed_x",
+      "bed_y",
+      "bed_z"
+    ],
+    "head": {
+      "A": {
+        "origin": [
+          "a_pivot_y",
+          "a_pivot_z"
+        ],
+        "sign": "a_dir",
+        "limits": [
+          "a_min",
+          "a_max"
+        ]
+      }
+    },
+    "table": {
+      "B": {
+        "origin": [
+          "b_pivot_x",
+          "b_pivot_z"
+        ],
+        "sign": "b_dir",
+        "limits": [
+          "b_min",
+          "b_max"
+        ]
+      }
+    }
+  },
+  "parameters": {
+    "bed_x": {
+      "label": "bed_x",
+      "unit": "mm",
+      "default": 110.0
+    },
+    "bed_y": {
+      "label": "bed_y",
+      "unit": "mm",
+      "default": 110.0
+    },
+    "bed_z": {
+      "label": "bed_z",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "a_pivot_y": {
+      "label": "a_pivot_y",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "a_pivot_z": {
+      "label": "a_pivot_z",
+      "unit": "mm",
+      "default": -30.0
+    },
+    "a_dir": {
+      "label": "a_dir",
+      "unit": "",
+      "default": 1.0
+    },
+    "a_min": {
+      "label": "a_min",
+      "unit": "deg",
+      "default": -90.0
+    },
+    "a_max": {
+      "label": "a_max",
+      "unit": "deg",
+      "default": 90.0
+    },
+    "b_pivot_x": {
+      "label": "b_pivot_x",
+      "unit": "mm",
+      "default": 110.0
+    },
+    "b_pivot_z": {
+      "label": "b_pivot_z",
+      "unit": "mm",
+      "default": 20.0
+    },
+    "b_dir": {
+      "label": "b_dir",
+      "unit": "",
+      "default": 1.0
+    },
+    "b_min": {
+      "label": "b_min",
+      "unit": "deg",
+      "default": -90.0
+    },
+    "b_max": {
+      "label": "b_max",
+      "unit": "deg",
+      "default": 90.0
+    }
+  }
+}

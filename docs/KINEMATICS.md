@@ -17,7 +17,28 @@ is the list order in `generic_chain`; the hand-written solvers have it fixed (ta
 G-code: the letters written are the machine's rotary axes in the order A B C (`MinimalPrintProfile.rotary_axes`, set from the machine
 file); a classic B+C machine writes exactly the same G-code as before. `MachineStateVector.a` is 0 for machines without A.
 
-## The `chain` object (kinematics `generic_chain`)
+## The nested form (recommended, `config/machines_experimental/nested_*.json`)
+
+```json
+"chain": {
+  "part_origin": ["c_axis_x + eccentricity_x", "c_axis_y + eccentricity_y", "c_axis_z"],
+  "table": {                                       // "head" and "table": separate branches, no dependence between them;
+    "B": { "origin": ["pivot_offset_x", "pivot_offset_z"],        // a missing / empty one is left out
+           "sign": "b_axis_dir", "limits": ["b_axis_min", "b_axis_max"],
+           "carries": {                            // the indentation IS the hierarchy: B carries C
+      "C": { "origin": ["c_axis_x", "c_axis_y"], "sign": "c_axis_dir", "limits": ["c_axis_min", "c_axis_max"] }
+    }}
+  }
+}
+```
+* X, Y, Z are implicit (outermost, on the head, sign +1; `"linear_signs": [1, -1, 1]` flips one). Write them out in the
+  hierarchy only for exceptions (a bed that moves in Y, a Z carried by a tilting head) - then all three, with `sign`.
+* Only one axis per level: two axes on the same level (independent siblings) are refused for now; put one into the other's `carries`
+  (the order only matters when their axis lines do not meet). Tip / tool axis default to (0,0,0) / (0,0,1).
+* `limits: [min, max]` is the same as `min` / `max`. The list form below stays valid; both give the same chain
+  (tests/test_chain_nested.py).
+
+## The `chain` object, list form (kinematics `generic_chain`)
 
 ```json
 "kinematics": "generic_chain",
