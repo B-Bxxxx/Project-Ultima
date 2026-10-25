@@ -15,6 +15,7 @@ from src.stage3_kinematics.refine import solve_refined
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 MACHINES = os.path.join(os.path.dirname(__file__), "..", "config", "machines")
+EXPERIMENTAL = os.path.join(os.path.dirname(__file__), "..", "config", "machines_experimental")
 PAIRS = {"trunnion_table_xyzbc": "chain_trunnion_5axis.json", "swivel_head_xyzbc": "chain_swivel_head_5axis.json",
          "planar_3axis_xyz": "chain_cartesian_3axis.json"}
 CLASSIC = {"trunnion_table_xyzbc": "trunnion_5axis.json", "planar_3axis_xyz": "cartesian_3axis.json", "swivel_head_xyzbc": "trunnion_5axis.json"}
@@ -49,7 +50,7 @@ def trajectory():
 
 
 def configs(kin, variant):
-    spec_c = load_machine_file(os.path.join(MACHINES, PAIRS[kin]))
+    spec_c = load_machine_file(os.path.join(EXPERIMENTAL, PAIRS[kin]))
     classic = load_machine_file(os.path.join(MACHINES, CLASSIC[kin]))
     over = {k: v for k, v in variant.items() if k in spec_c.parameters}
     cfg_chain = spec_c.to_machine_config(over)
@@ -130,7 +131,7 @@ def test_table_carries_linear_axis():
     """Y moves the bed (which carries B and C) instead of the nozzle. With sign -1 (bed +Y = nozzle -Y relative to the part)
     the machine's Y value - hence the whole G-code - is the same as for a nozzle that moves in Y."""
     from src.common.param_spec import resolve_values
-    spec = load_machine_file(os.path.join(MACHINES, "chain_trunnion_5axis.json"))
+    spec = load_machine_file(os.path.join(EXPERIMENTAL, "chain_trunnion_5axis.json"))
     over = {"c_axis_y": 50.0, "pivot_offset_z": 20.0}
     vals = resolve_values(spec.parameters, over)
     d = json.loads(json.dumps(spec.chain))
@@ -181,7 +182,7 @@ def test_bad_chain_is_rejected(bad):
 
 
 def test_machine_file_rules():
-    spec = load_machine_file(os.path.join(MACHINES, "chain_trunnion_5axis.json"))
+    spec = load_machine_file(os.path.join(EXPERIMENTAL, "chain_trunnion_5axis.json"))
     d = spec.to_dict()
     d2 = json.loads(json.dumps(d))
     d2["axes"] = ["X", "Y", "Z"]                                                  # axes must match the chain

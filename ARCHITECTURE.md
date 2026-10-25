@@ -99,7 +99,7 @@ Print order inside a layer is `FEATURE_ORDER = (inner_wall, outer_wall, bottom_s
 | `trunnion_table_xyzbc` | $P_m = P_p + R_B(B) \cdot (R_C(C) \cdot P_e - P_p)$ |
 | `swivel_head_xyzbc` | $P_m = P + P_p - R_C(C) \cdot R_B(B) \cdot P_p$ |
 | `planar_3axis_xyz` | $P_m = P$ (Pass-through). Logs warnings if surface tilt exceeds `max_3axis_tilt_deg`. |
-| `generic_chain` | **Parallel test solver**: the axes are described mathematically in the machine file's `chain` (joint directions and points in the zero pose, who carries whom, signs, limits, continuous C; product of exponentials, closed-form IK for up to two rotary joints). Gives the same G-code as the three solvers above for the shipped `config/machines/chain_*.json`; the others stay untouched. Details, status (ABC model, 6 axis / A axis in progress): `docs/KINEMATICS.md`. |
+| `generic_chain` | **Parallel test solver**: the axes are described mathematically in the machine file's `chain` (joint directions and points in the zero pose, who carries whom, signs, limits, continuous C; product of exponentials, closed-form IK for up to two rotary joints). Gives the same G-code as the three solvers above for the shipped `config/machines_experimental/chain_*.json (copy one into config/machines to see it in the GUI)`; the others stay untouched. Details, status (ABC model, 6 axis / A axis in progress): `docs/KINEMATICS.md`. |
 
 ## User Interfaces
 

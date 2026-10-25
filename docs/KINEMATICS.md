@@ -54,7 +54,7 @@ joint-space refinement (`solve_refined`) works unchanged.
 ## Parity with the hand-written solvers
 
 `tests/test_generic_chain.py` solves the same trajectories (vertical, tilted, spiral, random tilts, travels, singular
-tilt) with the old solver and with the chain description in `config/machines/chain_*.json` (variants: origin offsets,
+tilt) with the old solver and with the chain description in `config/machines_experimental/chain_*.json (copy one into config/machines to see it in the GUI)` (variants: origin offsets,
 pivot, eccentricity, `b_axis_dir`/`c_axis_dir` = -1): poses, tool alignment and inverse agree to < 2e-6.
 One deliberate difference: with `b_axis_dir = -1` and one-sided limits the old solver clamps B to 0 (it always takes B >= 0 in the
 program convention); the chain solver takes the other branch if it lies inside the limits.
