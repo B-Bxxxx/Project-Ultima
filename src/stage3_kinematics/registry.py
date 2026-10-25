@@ -19,6 +19,7 @@ class KinematicsRegistry:
         if name not in cls._solvers:
             import src.stage3_kinematics.trunnion_solver
             import src.stage3_kinematics.head_solver
+            import src.stage3_kinematics.chain_solver
             try:
                 import src.stage3_kinematics.cartesian_solver
             except ImportError:
@@ -38,5 +39,6 @@ class KinematicsRegistry:
         """
         import src.stage3_kinematics.trunnion_solver
         import src.stage3_kinematics.head_solver
+        import src.stage3_kinematics.chain_solver
 
 KinematicsRegistry.discover_solvers()

@@ -13,22 +13,29 @@ Machine files: the kinematic description of a machine as an editable JSON file.
 Parameters are MachineConfig fields; the GUI shows one named input field per declared parameter.
 A 5-axis machine (axes X Y Z B C) must declare the B and C limits; a 3-axis machine must not use
 a rotary kinematic. Anything missing or inconsistent is an error.
+
+kinematics "generic_chain" instead describes the axes mathematically in a "chain" object (joint directions, axis
+points, who carries whom, limits; see chain.py); its parameters may have any name and are used in the chain's expressions.
 """
 import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+import numpy as np
+
 from src.common.param_spec import ParamSpec, SpecError, parse_parameters, resolve_values
 from src.common.schemas import MachineConfig
 
 # importing the solver modules registers them
-from src.stage3_kinematics import head_solver, trunnion_solver  # noqa: F401
+from src.stage3_kinematics import chain_solver, head_solver, trunnion_solver  # noqa: F401
+from src.stage3_kinematics.chain import Chain
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 FORMAT = "cam-machine"
 VERSION = 1
 PLANAR = "planar_3axis_xyz"
+GENERIC = "generic_chain"
 VALID_AXES = ("X", "Y", "Z", "B", "C")
 CONFIG_FIELDS = ("joint_tolerance", "b_axis_dir", "c_axis_dir", "c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
                  "b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max", "max_3axis_tilt_deg")
@@ -48,6 +55,7 @@ class MachineSpec:
     build_volume: Optional[Dict[str, list]] = None
     parameters: Dict[str, ParamSpec] = field(default_factory=dict)
     source: str = ""
+    chain: Optional[Dict[str, Any]] = None          # mathematical axis chain (only for kinematics "generic_chain")
 
     @property
     def has_rotary_axes(self) -> bool:
@@ -116,7 +124,7 @@ class MachineSpec:
             raise MachineFileError(f'{where}"format" must be "{FORMAT}"')
         if d.get("version") != VERSION:
             raise MachineFileError(f'{where}unsupported "version" {d.get("version")!r} (expected {VERSION})')
-        extra = set(d) - {"format", "version", "name", "description", "kinematics", "axes", "build_volume", "parameters"}
+        extra = set(d) - {"format", "version", "name", "description", "kinematics", "axes", "build_volume", "parameters", "chain"}
         if extra:
             raise MachineFileError(f"{where}unknown field(s) {sorted(extra)}")
         name = d.get("name")
@@ -132,21 +140,27 @@ class MachineSpec:
             raise MachineFileError(f'{where}"axes" must be a list of distinct axes from {list(VALID_AXES)}')
         if not {"X", "Y", "Z"} <= set(axes):
             raise MachineFileError(f'{where}"axes" must contain X, Y and Z')
-        rotary = {"B", "C"} & set(axes)
-        if rotary and rotary != {"B", "C"}:
-            raise MachineFileError(f'{where}a rotary machine needs both B and C in "axes"')
-        if rotary and kin == PLANAR:
-            raise MachineFileError(f'{where}kinematics "{PLANAR}" is a 3-axis solver but "axes" lists B and C')
-        if not rotary and kin != PLANAR:
-            raise MachineFileError(f'{where}kinematics "{kin}" needs "B" and "C" in "axes"')
         params = parse_parameters(d.get("parameters"), where)
-        unknown = set(params) - set(CONFIG_FIELDS)
-        if unknown:
-            raise MachineFileError(f"{where}unknown machine parameter(s) {sorted(unknown)}; allowed: {list(CONFIG_FIELDS)}")
-        if rotary:
-            for n in ROTARY_REQUIRED:
-                if n not in params:
-                    raise MachineFileError(f"{where}the rotary axes need the parameter '{n}' in \"parameters\"")
+        chain = d.get("chain")
+        if kin == GENERIC:
+            chain = cls._check_chain(chain, axes, params, where)
+        else:
+            if chain is not None:
+                raise MachineFileError(f'{where}"chain" is only used by kinematics "{GENERIC}"')
+            rotary = {"B", "C"} & set(axes)
+            if rotary and rotary != {"B", "C"}:
+                raise MachineFileError(f'{where}a rotary machine needs both B and C in "axes"')
+            if rotary and kin == PLANAR:
+                raise MachineFileError(f'{where}kinematics "{PLANAR}" is a 3-axis solver but "axes" lists B and C')
+            if not rotary and kin != PLANAR:
+                raise MachineFileError(f'{where}kinematics "{kin}" needs "B" and "C" in "axes"')
+            unknown = set(params) - set(CONFIG_FIELDS)
+            if unknown:
+                raise MachineFileError(f"{where}unknown machine parameter(s) {sorted(unknown)}; allowed: {list(CONFIG_FIELDS)}")
+            if rotary:
+                for n in ROTARY_REQUIRED:
+                    if n not in params:
+                        raise MachineFileError(f"{where}the rotary axes need the parameter '{n}' in \"parameters\"")
         bv = d.get("build_volume")
         if bv is not None:
             ok = (isinstance(bv, dict) and set(bv) <= {"x", "y", "z"} and all(
@@ -155,7 +169,20 @@ class MachineSpec:
             if not ok:
                 raise MachineFileError(f'{where}"build_volume" must look like {{"x": [0, 220], "y": [0, 220], "z": [0, 250]}}')
         return cls(name=name.strip(), kinematics=kin, axes=list(axes), description=str(d.get("description", "")),
-                   build_volume=bv, parameters=params, source=source)
+                   build_volume=bv, parameters=params, source=source, chain=chain)
+
+    @staticmethod
+    def _check_chain(chain, axes, params, where):
+        """The chain of a generic_chain machine must parse with the default parameter values and use exactly the listed axes."""
+        if chain is None:
+            raise MachineFileError(f'{where}kinematics "{GENERIC}" needs a "chain" description')
+        try:
+            ch = Chain.parse(chain, {n: p.default for n, p in params.items()}, where)
+        except SpecError as e:
+            raise MachineFileError(str(e)) from e
+        if {j.axis for j in ch.joints} != set(axes):
+            raise MachineFileError(f'{where}"axes" {sorted(axes)} must list exactly the axes of the chain {sorted(j.axis for j in ch.joints)}')
+        return chain
 
     def defaults(self) -> Dict[str, Any]:
         return {n: p.default for n, p in self.parameters.items()}
@@ -165,9 +192,27 @@ class MachineSpec:
             v = resolve_values(self.parameters, overrides, f"machine '{self.name}': ")
         except SpecError as e:
             raise MachineFileError(str(e)) from e
+        if self.kinematics == GENERIC:
+            return self._generic_config(v)
         for n in ROTARY_REQUIRED:                   # a 3-axis machine has no rotary limits
             v.setdefault(n, 0.0)
         return MachineConfig(kinematic_chain=self.kinematics, **v)
+
+    def _generic_config(self, v) -> MachineConfig:
+        try:
+            ch = Chain.parse(self.chain, v, f"machine '{self.name}': ")
+        except SpecError as e:
+            raise MachineFileError(str(e)) from e
+        kw = {k: v[k] for k in CONFIG_FIELDS if k in v}
+        for j in ch.joints:                          # informational copies for code that reads the classic fields
+            if j.rotary:
+                a = j.axis.lower()
+                kw[f"{a}_axis_min"] = j.lo if np.isfinite(j.lo) else -1e6
+                kw[f"{a}_axis_max"] = j.hi if np.isfinite(j.hi) else 1e6
+                kw[f"{a}_axis_dir"] = j.sign
+        for n in ROTARY_REQUIRED:
+            kw.setdefault(n, 0.0)
+        return MachineConfig(kinematic_chain=self.kinematics, chain=ch.to_dict(), **kw)
 
     def to_dict(self, values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
@@ -179,6 +224,8 @@ class MachineSpec:
             d["description"] = self.description
         d["kinematics"] = self.kinematics
         d["axes"] = list(self.axes)
+        if self.chain is not None:
+            d["chain"] = self.chain
         if self.build_volume:
             d["build_volume"] = self.build_volume
         d["parameters"] = {n: ParamSpec(**{**p.__dict__, "default": vals[n]}).to_dict() for n, p in self.parameters.items()}

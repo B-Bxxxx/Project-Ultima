@@ -99,3 +99,10 @@ Problems and traps met while building the pipeline - raw material for the docume
 - `stage3_kinematics.refine.solve_refined` (used by the GUI and the CLI instead of `solver.solve`): solves, measures the deviation in the PART frame at 1/4, 1/2, 3/4 of every extruding segment through the solver's inverse (`to_part_batch`), splits the segments over `joint_tolerance` (machine file parameter, default 0.02 mm, 0 = off) at their midpoint (volume halved, layer/feature kept) and solves again (max 14 rounds, point-count guard, warning if it stops early). Travel moves and 3-axis machines are not touched.
 - Cost: more G-code points where C changes fast (a cone of r=15: 35k -> 66k points, ~20 s for the refinement).
 - Solvers that cannot be inverted (`to_part_batch` returns None) are never refined.
+
+## Kinematics: current status (Stage 3)
+Three hand-written solvers are the supported ones; `generic_chain` (machine file `chain`, see `docs/KINEMATICS.md`) is a parallel
+test implementation that must keep giving the same poses (tests/test_generic_chain.py). Rotary model A(X) B(Y) C(Z): only B and C
+reach the G-code today, A and a third rotary joint (6 axis) are in progress. In the hand-written solvers who carries whom is fixed
+(table: B carries C, head: C carries B). With one-sided B limits and `b_axis_dir = -1` the old solvers clamp B to 0 (they always compute B >= 0 in the
+program convention); `generic_chain` picks the branch inside the limits.

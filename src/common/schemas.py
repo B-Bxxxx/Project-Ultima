@@ -169,6 +169,7 @@ class MachineConfig(BaseModel):
     b_axis_vector: Tuple[float, float, float] = Field((0.0, 1.0, 0.0), description="B-axis rotation vector")
     c_axis_vector: Tuple[float, float, float] = Field((0.0, 0.0, 1.0), description="C-axis rotation vector")
     max_3axis_tilt_deg: float = Field(25.0, description="Maximum safe surface tilt for a 3-axis active-Z machine before collision risk.")
+    chain: Optional[Dict[str, Any]] = Field(None, description="Numeric chain description for the 'generic_chain' solver (joints, axes, limits); None for the hand-written solvers")
 
 class MachineStateVector(BaseModel):
     """
