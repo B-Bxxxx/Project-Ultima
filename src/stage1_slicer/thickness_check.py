@@ -40,6 +40,7 @@ class GapStats:
     n_min: float
     n_max: float
     count: int
+    tilt_max_deg: float = 0.0              # steepest layer surface: arccos(normal gap / vertical gap)
 
     def as_tuple(self):
         return (self.v_min, self.v_max, self.n_min, self.n_max)
@@ -56,6 +57,17 @@ class ThicknessCheck:
     ok: bool                               # the deciding direction is inside the window
     both_ok: bool                          # inside the window in both directions (any machine)
     messages: List[str] = field(default_factory=list)
+    tilt_warning: Optional[str] = None     # 3-axis machine: layer surfaces steeper than the machine's limit
+
+
+def tilt_deg(vertical, normal) -> float:
+    """Steepest layer surface (degrees) from vertical / normal gaps: normal = vertical * cos(tilt)."""
+    v = np.asarray(vertical, float)
+    n = np.asarray(normal, float)
+    ok = v > 1e-9
+    if not ok.any():
+        return 0.0
+    return float(np.degrees(np.arccos(np.clip(np.min(n[ok] / v[ok]), -1.0, 1.0))))
 
 
 def measure_model(model) -> Optional[GapStats]:
@@ -68,7 +80,7 @@ def measure_model(model) -> Optional[GapStats]:
                 n.extend(c.normal_gaps)
     if not v:
         return None
-    return GapStats(min(v), max(v), min(n), max(n), len(v))
+    return GapStats(min(v), max(v), min(n), max(n), len(v), tilt_deg(v, n))
 
 
 @contextmanager
@@ -104,10 +116,11 @@ def probe(mesh: trimesh.Trimesh, strategy_name: str, params: Dict[str, Any], tra
                 g, gn = strat.layer_gaps(float(x), float(y), i)
                 v.append(g)
                 nn.append(gn)
-    return GapStats(min(v), max(v), min(nn), max(nn), len(v))
+    return GapStats(min(v), max(v), min(nn), max(nn), len(v), tilt_deg(v, nn))
 
 
-def check(stats: GapStats, nozzle: float, rotary: bool, layer_height: Optional[float] = None) -> ThicknessCheck:
+def check(stats: GapStats, nozzle: float, rotary: bool, layer_height: Optional[float] = None,
+          max_tilt_deg: Optional[float] = None) -> ThicknessCheck:
     lo, hi = printable_window(nozzle)
     eps = 1e-9
     direction = "normal" if rotary else "vertical"
@@ -132,7 +145,11 @@ def check(stats: GapStats, nozzle: float, rotary: bool, layer_height: Optional[f
     msgs += describe(a, "this machine")
     if inside(a) and not inside(b):
         msgs += describe(b, "other nozzle direction")
-    return ThicknessCheck(direction, a[0], a[1], b[0], b[1], (lo, hi), inside(a), inside(a) and inside(b), msgs)
+    warning = None
+    if not rotary and max_tilt_deg is not None and stats.tilt_max_deg > max_tilt_deg + 1e-6:
+        warning = (f"Layer surfaces are tilted up to {stats.tilt_max_deg:.1f} deg, the machine allows {max_tilt_deg:g} deg: "
+                   "a vertical nozzle gets steep flanks (collision risk, thinner real layers).")
+    return ThicknessCheck(direction, a[0], a[1], b[0], b[1], (lo, hi), inside(a), inside(a) and inside(b), msgs, warning)
 
 
 @dataclass

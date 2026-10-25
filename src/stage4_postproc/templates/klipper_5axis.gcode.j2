@@ -21,7 +21,7 @@ G1 E-{{ "%.3f"|format(profile.retract_distance) }} F{{ "%.0f"|format(profile.ret
 {% if m.hop %}
 {{ cmd }} Z{{ "%.3f"|format(m.lift_z) }} F{{ "%.0f"|format(profile.z_speed) }} ; Z-hop up
 {% endif %}
-{{ cmd }} X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }}{% if not m.hop %} Z{{ "%.3f"|format(m.z) }}{% endif %}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(m.b) }} C{{ "%.3f"|format(m.c) }}{% endif %} F{{ "%.0f"|format(m.feedrate) }} ; Travel
+{{ cmd }} X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }}{% if not m.hop %} Z{{ "%.3f"|format(m.z) }}{% endif %}{{ m.rot }} F{{ "%.0f"|format(m.feedrate) }} ; Travel
 {% if m.hop %}
 {{ cmd }} Z{{ "%.3f"|format(m.z) }} F{{ "%.0f"|format(profile.z_speed) }} ; Z-hop down
 {% endif %}
@@ -32,14 +32,14 @@ G1 E{{ "%.3f"|format(profile.unretract_distance) }} F{{ "%.0f"|format(profile.un
 {% if m.type_marker %}
 ; TYPE: {{ m.type_marker }}
 {% endif %}
-G1 X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }} Z{{ "%.3f"|format(m.z) }}{% if profile.include_rotary_axes %} B{{ "%.3f"|format(m.b) }} C{{ "%.3f"|format(m.c) }}{% endif %} E{{ "%.5f"|format(m.e) }} F{{ "%.0f"|format(m.feedrate) }}
+G1 X{{ "%.3f"|format(m.x) }} Y{{ "%.3f"|format(m.y) }} Z{{ "%.3f"|format(m.z) }}{{ m.rot }} E{{ "%.5f"|format(m.e) }} F{{ "%.0f"|format(m.feedrate) }}
 {% endif %}
 {% endfor %}
 ; -------------------
 ; End G-Code
 {{ cmd }} Z{{ "%.3f"|format(park_z) }} F{{ "%.0f"|format(profile.travel_speed) }}
 {% if profile.include_rotary_axes %}
-{{ cmd }} B0 C0 F{{ "%.0f"|format(profile.travel_speed) }}
+{{ cmd }} {{ rot_home }} F{{ "%.0f"|format(profile.travel_speed) }}
 {% endif %}
 M104 S0 ; Turn off extruder
 M140 S0 ; Turn off bed

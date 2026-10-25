@@ -1,4 +1,5 @@
 import os
+import logging
 import sys
 import time
 
@@ -18,11 +19,14 @@ from pyqtgraph import Vector
 import pyqtgraph.opengl as gl
 
 from src.common.feature_styles import FEATURE_STYLES, group_lines_by_feature
+from src.common.mesh_check import check_mesh
 from src.common.placement import place_mesh
 from src.common.schemas import MinimalPrintProfile
 from src.common.view_model import (Playback, effective_layers, head_item, layer_count, move_range,
                                    status_text)
 from src.common.param_spec import ParamSpec
+from src.common import project_file
+from src.common.project_file import ProjectFileError
 from src.gui_editors import FunctionEditor, MachineEditor
 from src import gui_theme
 from src.stage1_slicer.function_file import (
@@ -35,6 +39,7 @@ from src.stage2_toolpath.contour_generator import StandardToolpathGenerator
 from src.stage3_kinematics.machine_file import (
     MachineFileError, MachineSpec, load_machine_dir, load_machine_file, save_machine_file,
 )
+from src.stage3_kinematics.refine import solve_refined
 from src.stage3_kinematics.registry import KinematicsRegistry
 from src.stage4_postproc.klipper_postproc import Klipper5AxisPostProcessor
 
@@ -42,6 +47,8 @@ from src.stage4_postproc.klipper_postproc import Klipper5AxisPostProcessor
 # The settings column scrolls with the mouse wheel. Spin boxes, combo boxes and sliders must NOT
 # react to the wheel (a value changing while the user scrolls the menu is a nasty surprise): they
 # ignore the event, which then reaches the scroll area. Keyboard and mouse editing are unchanged.
+logger = logging.getLogger(__name__)
+
 class _NoWheel:
     def wheelEvent(self, event):
         event.ignore()
@@ -133,6 +140,29 @@ class ParameterForm(QWidget):
             w.valueChanged.connect(lambda *_: self.changed.emit())
         return w
 
+    def set_values(self, values):
+        """Sets the named fields; returns a list of problems (unknown names, values clamped to the range)."""
+        problems = []
+        for name, v in dict(values).items():
+            w = self._widgets.get(name)
+            if w is None:
+                problems.append(f"unknown parameter '{name}'")
+                continue
+            sp = self._specs[name]
+            try:
+                if sp.type == "bool":
+                    w.setChecked(bool(v))
+                elif sp.type == "choice":
+                    w.setCurrentIndex(sp.choices.index(v))
+                else:
+                    num = float(v)
+                    if not w.minimum() <= num <= w.maximum():
+                        problems.append(f"'{name}' = {v} is outside the allowed range")
+                    w.setValue(num)
+            except (ValueError, TypeError):
+                problems.append(f"bad value for '{name}': {v!r}")
+        return problems
+
     def values(self):
         out = {}
         for name, w in self._widgets.items():
@@ -192,6 +222,8 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1500, 900)
 
         self.source_mesh = None      # geometry as generated / loaded
+        self._stl_path = ""          # file of the loaded STL (stored in project files)
+        self._mesh_issues = []       # problems found when the STL was loaded (see common/mesh_check.py)
         self.mesh = None             # source_mesh after placement (what is sliced)
         self.stage1_model = None
         self.stage2_traj = None
@@ -213,8 +245,9 @@ class MainWindow(QMainWindow):
         self._check_timer.setSingleShot(True)
         self._check_timer.setInterval(300)
         self._check_timer.timeout.connect(self.update_transition_advice)
-        for w in (self.trans_height_spin, self.layer_height_spin, self.nozzle_spin):
+        for w in (self.trans_height_spin, self.layer_height_spin, self.nozzle_spin, self.ramp_h_spin, self.ramp_gap_spin):
             w.valueChanged.connect(self._schedule_check)
+        self._on_mode_changed()
         self.function_form.changed.connect(self._schedule_check)
         self.function_combo.currentTextChanged.connect(self._schedule_check)
         self.machine_combo.currentTextChanged.connect(self._schedule_check)
@@ -249,6 +282,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         left_outer.addWidget(scroll, 1)
 
+        self._build_project_section()
         self._build_geometry_section()
         self._build_placement_section()
         self._build_function_section()
@@ -441,11 +475,27 @@ class MainWindow(QMainWindow):
     def _build_slicer_section(self):
         sec = self._section("3. Stage 1 Slicer")
         f = sec.form
-        self.layer_height_spin = self._dspin(0.4, 0.01, 5, 0.1)
+        self._slicer_form = f
+        self.layer_height_spin = self._dspin(0.2, 0.01, 5, 0.1)
         f.addRow("Layer Height:", self.layer_height_spin)
         self.trans_height_spin = self._dspin(2.0, 0.0, 100, 0.5)
         self.trans_height_spin.valueChanged.connect(self.update_viewport)
         f.addRow("Transition H:", self.trans_height_spin)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["standard", "ramp"])
+        self.mode_combo.setToolTip("standard: the function is blended in over the transition height.\n"
+                                   "ramp: the part is printed planar (partial layers) up to the function surface, then every "
+                                   "layer follows the function exactly with the normal layer height - use it when the "
+                                   "function value has to be reached within a few millimetres.")
+        f.addRow("Transition mode:", self.mode_combo)
+        self.ramp_h_spin = self._dspin(0.2, 0.05, 2.0, 0.05)
+        self.ramp_h_spin.setToolTip("Thickness of the planar base layers of the ramp.")
+        f.addRow("Ramp layer height:", self.ramp_h_spin)
+        self.ramp_gap_spin = self._dspin(0.1, 0.0, 1.0, 0.05)
+        self.ramp_gap_spin.setToolTip("A base layer is printed only where the function surface is at least this far above it "
+                                      "(the thinnest layer that still sticks).")
+        f.addRow("Ramp min. gap:", self.ramp_gap_spin)
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         self.lbl_transition = QLabel("")
         self.lbl_transition.setWordWrap(True)
         self.lbl_transition.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
@@ -469,6 +519,15 @@ class MainWindow(QMainWindow):
         f.addRow("Bottom skin layers:", self.bottom_spin)
         self.top_spin = self._ispin(3, 0, 50)
         f.addRow("Top skin layers:", self.top_spin)
+        self.brim_spin = self._dspin(0.0, 0.0, 50.0, 1.0)
+        self.brim_spin.setToolTip("Width of the brim around the first layer in mm (0 = none)")
+        f.addRow("Brim width (mm):", self.brim_spin)
+        self.skirt_loops_spin = self._ispin(0, 0, 20)
+        self.skirt_loops_spin.setToolTip("Number of skirt loops around the first layer (0 = none)")
+        f.addRow("Skirt loops:", self.skirt_loops_spin)
+        self.skirt_dist_spin = self._dspin(3.0, 0.0, 50.0, 0.5)
+        self.skirt_dist_spin.setToolTip("Gap between the part (or its brim) and the skirt in mm")
+        f.addRow("Skirt distance (mm):", self.skirt_dist_spin)
         self.travel_cmd_combo = QComboBox()
         self.travel_cmd_combo.addItems(["G0", "G1"])
         f.addRow("Travel command:", self.travel_cmd_combo)
@@ -587,6 +646,191 @@ class MainWindow(QMainWindow):
         f.addRow("Playback:", row)
         f.addRow(self.play_slider)
 
+    # ------------------------------------------------------------------ project (settings) file
+    def _build_project_section(self):
+        sec = self._section("0. Project (settings)", expanded=False)
+        f = sec.form
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        b1 = QPushButton("Save settings...")
+        b1.setToolTip("Everything: geometry, placement, function + values, machine + values, slicer and profile settings.")
+        b1.clicked.connect(self.save_project_to_file)
+        b2 = QPushButton("Load settings...")
+        b2.clicked.connect(self.load_project_from_file)
+        rl.addWidget(b1)
+        rl.addWidget(b2)
+        f.addRow(row)
+        self.lbl_project = QLabel("")
+        self.lbl_project.setWordWrap(True)
+        f.addRow(self.lbl_project)
+
+    def _setting_widgets(self):
+        """section -> {key: widget} for every plain input that belongs to a project file."""
+        return {
+            "geometry": {"radius": self.cyl_r, "height": self.cyl_h, "wall": self.cyl_wall,
+                         "width": self.cube_w, "depth": self.cube_d, "cube_height": self.cube_h},
+            "placement": {"rot_x": self.rot_x, "rot_y": self.rot_y, "rot_z": self.rot_z, "off_x": self.off_x,
+                          "off_y": self.off_y, "off_z": self.off_z, "center_xy": self.chk_center, "drop_to_bed": self.chk_drop},
+            "slicer": {"layer_height": self.layer_height_spin, "transition_height": self.trans_height_spin,
+                       "transition_mode": self.mode_combo, "ramp_layer_height": self.ramp_h_spin,
+                       "ramp_min_gap": self.ramp_gap_spin},
+            "profile": {"nozzle_diameter": self.nozzle_spin, "num_perimeters": self.perims_spin,
+                        "infill_density": self.infill_spin, "bottom_solid_layers": self.bottom_spin,
+                        "top_solid_layers": self.top_spin, "brim_width": self.brim_spin, "skirt_loops": self.skirt_loops_spin,
+                        "skirt_distance": self.skirt_dist_spin, "travel_command": self.travel_cmd_combo,
+                        "retract_distance": self.retract_spin, "unretract_distance": self.unretract_spin,
+                        "retract_speed": self.retract_speed_spin, "unretract_speed": self.unretract_speed_spin,
+                        "z_hop": self.zhop_spin, "hop_short_travels": self.hop_short_chk, "park_lift": self.park_spin,
+                        "infill_overlap": self.overlap_spin, "path_tolerance": self.path_tol_spin,
+                        "infill_path_tolerance": self.infill_tol_spin, "min_segment_length": self.min_seg_spin,
+                        "seam_angle_deg": self.seam_spin, "thickness_model": self.thickness_combo},
+        }
+
+    @staticmethod
+    def _widget_value(w):
+        if isinstance(w, QCheckBox):
+            return w.isChecked()
+        if isinstance(w, _QComboBox):
+            return w.currentText()
+        return w.value()
+
+    @staticmethod
+    def _set_widget(w, v, label, problems):
+        try:
+            if isinstance(w, QCheckBox):
+                w.setChecked(bool(v))
+            elif isinstance(w, _QComboBox):
+                if w.findText(str(v)) < 0:
+                    problems.append(f"{label}: '{v}' is not available")
+                else:
+                    w.setCurrentText(str(v))
+            else:
+                num = float(v)
+                if not w.minimum() <= num <= w.maximum():
+                    problems.append(f"{label}: {v} is outside {w.minimum():g}..{w.maximum():g} (clamped)")
+                w.setValue(int(round(num)) if isinstance(w, _QSpinBox) else num)
+        except (TypeError, ValueError):
+            problems.append(f"{label}: bad value {v!r}")
+
+    def collect_project(self):
+        d = {}
+        for section, widgets in self._setting_widgets().items():
+            d[section] = {k: self._widget_value(w) for k, w in widgets.items()}
+        d["geometry"]["type"] = self.geom_combo.currentText()
+        d["geometry"]["stl_path"] = self._stl_path
+        if self.seam_spin.value() < 0:
+            d["profile"]["seam_angle_deg"] = None               # "off"
+        fspec, mspec = self.current_function(), self.current_machine()
+        if fspec is not None:
+            vals = self.function_form.values()
+            d["function"] = {"name": fspec.name, "source": fspec.source or "", "values": vals}
+            if not fspec.data_file:                              # expression / tilt: the definition travels with the project
+                d["function"]["definition"] = fspec.to_dict(vals)
+        if mspec is not None:
+            vals = self.machine_form.values()
+            d["machine"] = {"name": mspec.name, "source": mspec.source or "", "values": vals,
+                            "definition": mspec.to_dict(vals)}
+        return d
+
+    def apply_project(self, d):
+        """Restores a project dict (see project_file); returns a list of problems that were worked around."""
+        problems = []
+        widgets = self._setting_widgets()
+        every = [w for sec in widgets.values() for w in sec.values()] + [self.geom_combo]
+        for w in every:
+            w.blockSignals(True)
+        try:
+            for section, known in widgets.items():
+                data = dict(d.get(section, {}))
+                if section == "profile" and "seam_angle_deg" in data and data["seam_angle_deg"] is None:
+                    data["seam_angle_deg"] = -1.0
+                for k, v in data.items():
+                    if k in known:
+                        self._set_widget(known[k], v, f"{section}.{k}", problems)
+                    elif not (section == "geometry" and k in ("type", "stl_path")):
+                        problems.append(f"{section}.{k}: unknown setting (ignored)")
+            g = d.get("geometry", {})
+            if g.get("type"):
+                self._set_widget(self.geom_combo, g["type"], "geometry.type", problems)
+        finally:
+            for w in every:
+                w.blockSignals(False)
+        self.on_geom_changed()
+        self._update_z_offset_visibility()
+        self._on_mode_changed()
+        problems += self._apply_spec_section("function", d.get("function"))
+        problems += self._apply_spec_section("machine", d.get("machine"))
+        # the geometry last: it rebuilds the mesh and applies the placement once
+        gtype = self.geom_combo.currentText()
+        if gtype == "Upload STL...":
+            path = d.get("geometry", {}).get("stl_path", "")
+            if path and os.path.isfile(path):
+                try:
+                    self.source_mesh = self._read_stl(path)
+                    self.apply_placement()
+                except Exception as e:
+                    problems.append(f"geometry: cannot read '{path}': {e}")
+            else:
+                problems.append(f"geometry: the STL '{path}' was not found - load it again")
+        else:
+            self.load_geometry()
+        self._schedule_check()
+        return problems
+
+    def _apply_spec_section(self, kind, sec):
+        """function / machine: definition (or source file) -> selected entry -> parameter values."""
+        if not isinstance(sec, dict) or not sec.get("name"):
+            return []
+        problems = []
+        is_fn = kind == "function"
+        loader, adder, table = ((load_function_file, self.add_function, self.functions) if is_fn
+                                else (load_machine_file, self.add_machine, self.machines))
+        spec_cls = FunctionSpec if is_fn else MachineSpec
+        source = sec.get("source") or ""
+        try:
+            if sec.get("definition"):
+                spec = (spec_cls.from_dict(sec["definition"], base_dir=os.path.dirname(source), source=source) if is_fn
+                        else spec_cls.from_dict(sec["definition"], source=source))
+                adder(spec)
+            elif source and os.path.isfile(source):
+                adder(loader(source))
+            elif sec["name"] in table:
+                (self.function_combo if is_fn else self.machine_combo).setCurrentText(sec["name"])
+            else:
+                return [f"{kind}: '{sec['name']}' is not available (file: {source or 'none'})"]
+        except (FunctionFileError, MachineFileError, ValueError) as e:
+            return [f"{kind}: {e}"]
+        form = self.function_form if is_fn else self.machine_form
+        problems += [f"{kind}: {m}" for m in form.set_values(sec.get("values", {}))]
+        return problems
+
+    def save_project_to_file(self):
+        fname, _ = QFileDialog.getSaveFileName(self, "Save settings", "project.json", "Project files (*.json)")
+        if not fname:
+            return
+        try:
+            project_file.save_project(self.collect_project(), fname)
+            self.lbl_project.setText(f"Saved {os.path.basename(fname)}.")
+        except (ProjectFileError, FunctionFileError, MachineFileError, OSError) as e:
+            self.lbl_project.setText(f"Error: {e}")
+
+    def load_project_from_file(self):
+        fname, _ = QFileDialog.getOpenFileName(self, "Load settings", "", "Project files (*.json);;All files (*)")
+        if fname:
+            self.load_project_path(fname)
+
+    def load_project_path(self, fname):
+        try:
+            d = project_file.load_project(fname)
+        except ProjectFileError as e:
+            self.lbl_project.setText(f"Error: {e}")
+            return False
+        problems = self.apply_project(d)
+        name = os.path.basename(fname)
+        self.lbl_project.setText(f"Loaded {name}." + ("" if not problems else "\nNote: " + "; ".join(problems)))
+        return True
+
     # ------------------------------------------------------------------ small slots
     def on_geom_changed(self):
         txt = self.geom_combo.currentText()
@@ -612,11 +856,19 @@ class MainWindow(QMainWindow):
         elif gtype == "Upload STL...":
             fname, _ = QFileDialog.getOpenFileName(self, "Open STL", "", "STL Files (*.stl)")
             if fname:
-                loaded = trimesh.load(fname, file_type='stl', force='mesh')
-                src = loaded
-                self.lbl_stl.setText(fname.replace("\\", "/").split('/')[-1])
+                src = self._read_stl(fname)
         self.source_mesh = src
         self.apply_placement()
+
+    def _read_stl(self, fname):
+        loaded = trimesh.load(fname, file_type='stl', force='mesh')
+        self._stl_path = fname
+        self.lbl_stl.setText(fname.replace("\\", "/").split('/')[-1])
+        self._mesh_issues = check_mesh(loaded)
+        for msg in self._mesh_issues:
+            logger.warning("STL check: %s", msg)
+        self.lbl_stl.setToolTip("\n".join(self._mesh_issues))
+        return loaded
 
     def _update_z_offset_visibility(self):
         """The Z offset only makes sense when the part is NOT dropped to the bed."""
@@ -657,6 +909,8 @@ class MainWindow(QMainWindow):
         e = self.mesh.extents
         self.lbl_mesh_info.setText(f"Size: {e[0]:.1f} x {e[1]:.1f} x {e[2]:.1f} mm | "
                                    f"Z {self.mesh.bounds[0, 2]:.1f}..{self.mesh.bounds[1, 2]:.1f}")
+        if self.geom_combo.currentText() == "Upload STL..." and self._mesh_issues:
+            self.lbl_mesh_info.setText(self.lbl_mesh_info.text() + "\nWarning: " + " ".join(self._mesh_issues))
         if had_results:
             self.lbl_metrics.setText("Placement changed - run the pipeline again.")
         self._setup_view_controls()
@@ -707,7 +961,27 @@ class MainWindow(QMainWindow):
             return None
         p = {"layer_height": self.layer_height_spin.value(), "transition_height": self.trans_height_spin.value()}
         p.update(fspec.to_slicer_params(self.function_form.values()))
+        p.update(self._mode_params())
         return p
+
+    def _mode_params(self):
+        """Extra Stage 1 parameters of the transition mode ({} for the standard mode: nothing changes)."""
+        if self.mode_combo.currentText() != "ramp":
+            return {}
+        return {"transition_mode": "ramp", "ramp_layer_height": self.ramp_h_spin.value(),
+                "ramp_min_gap": self.ramp_gap_spin.value()}
+
+    def _on_mode_changed(self, *_):
+        ramp = self.mode_combo.currentText() == "ramp"
+        for w in (self.ramp_h_spin, self.ramp_gap_spin):
+            w.setVisible(ramp)
+            lbl = self._slicer_form.labelForField(w)
+            if lbl is not None:
+                lbl.setVisible(ramp)
+        self.trans_height_spin.setEnabled(not ramp)
+        self._schedule_check()
+        if hasattr(self, "lbl_status"):
+            self.update_viewport()
 
     def _is_rotary(self):
         mspec = self.current_machine()
@@ -719,7 +993,8 @@ class MainWindow(QMainWindow):
 
     def _show_check(self, stats, source):
         """Compact text + verdict from GapStats; the machine mode decides, both directions are shown."""
-        chk = thickness_check.check(stats, self.nozzle_spin.value(), self._is_rotary(), self.layer_height_spin.value())
+        chk = thickness_check.check(stats, self.nozzle_spin.value(), self._is_rotary(), self.layer_height_spin.value(),
+                                    self._max_tilt())
         lo, hi = chk.window
         other = "normal" if chk.direction == "vertical" else "vertical"
         lines = [f"Nozzle window {lo:.2f} .. {hi:.2f} mm ({source})",
@@ -731,7 +1006,19 @@ class MainWindow(QMainWindow):
         else:
             lines.append(f"NOT printable for this machine ({chk.direction}):")
             lines.extend("- " + m.split(": ", 1)[-1] for m in chk.messages)
+        if chk.tilt_warning:
+            lines.append("Warning: " + chk.tilt_warning)
         return "\n".join(lines), chk
+
+    def _max_tilt(self):
+        """The tilt limit of a 3-axis machine (None for machines with rotary axes: they follow the surface)."""
+        mspec = self.current_machine()
+        if mspec is None or mspec.has_rotary_axes:
+            return None
+        try:
+            return float(mspec.to_machine_config(self.machine_form.values()).max_3axis_tilt_deg)
+        except (MachineFileError, ValueError):
+            return None
 
     def _render_check(self, ok=True):
         text = self._check_text + (("\n" + self._check_note) if self._check_note else "")
@@ -744,6 +1031,12 @@ class MainWindow(QMainWindow):
             return
         self.btn_suggested.setVisible(False)
         self._check_note = ""
+        if self.mode_combo.currentText() == "ramp":
+            self._check_text = ("Ramp mode: planar base layers up to the function surface, then every layer follows the "
+                                "function exactly (layer height everywhere). The first full layer varies between the min. "
+                                "gap and min. gap + ramp layer height.")
+            self._render_check(True)
+            return
         params, mesh = None, self.mesh
         try:
             params = self._stage1_params()
@@ -767,7 +1060,7 @@ class MainWindow(QMainWindow):
         self._check_text, chk = self._show_check(stats, "estimate")
         if not chk.ok and not self._check_relevant:
             self._check_note = "The transition height does not change these gaps."
-        self._render_check(chk.ok)
+        self._render_check(chk.ok and not chk.tilt_warning)
         self._check_ok = chk.ok
         self.btn_suggested.setVisible(not chk.ok and self._check_relevant)     # only when the transition can help
 
@@ -1098,6 +1391,7 @@ class MainWindow(QMainWindow):
                 "transition_height": self.trans_height_spin.value(),
             }
             s1_params.update(fspec.to_slicer_params(self.function_form.values()))
+            s1_params.update(self._mode_params())
             machine_cfg = mspec.to_machine_config(self.machine_form.values())
             slicer_cls = PluginRegistry.get_plugin("universal_field_slicer")
             self.stage1_model = slicer_cls().slice(self.mesh, s1_params)
@@ -1109,6 +1403,9 @@ class MainWindow(QMainWindow):
                 infill_density=self.infill_spin.value(),
                 bottom_solid_layers=self.bottom_spin.value(),
                 top_solid_layers=self.top_spin.value(),
+                brim_width=self.brim_spin.value(),
+                skirt_loops=self.skirt_loops_spin.value(),
+                skirt_distance=self.skirt_dist_spin.value(),
                 travel_command=self.travel_cmd_combo.currentText(),
                 retract_distance=self.retract_spin.value(),
                 unretract_distance=self.unretract_spin.value(),
@@ -1116,6 +1413,7 @@ class MainWindow(QMainWindow):
                 unretract_speed=self.unretract_speed_spin.value(),
                 # only the axes the machine really has appear in the G-code
                 include_rotary_axes=mspec.has_rotary_axes,
+                rotary_axes=mspec.rotary_letters or "BC",
                 park_lift=self.park_spin.value(),
                 infill_overlap=self.overlap_spin.value(),
                 path_tolerance=self.path_tol_spin.value(),
@@ -1130,13 +1428,14 @@ class MainWindow(QMainWindow):
             self.stage2_traj = StandardToolpathGenerator().generate_toolpath(self.stage1_model, prof)
 
             solver_cls = KinematicsRegistry.get_solver(mspec.kinematics)
-            self.stage3_traj = solver_cls().solve(self.stage2_traj, machine_cfg)
+            self.stage3_traj = solve_refined(solver_cls(), self.stage2_traj, machine_cfg)
 
             self.gcode = Klipper5AxisPostProcessor().generate_gcode(self.stage3_traj, prof)
             self.txt_gcode.setPlainText(self.gcode)
 
             dt = time.time() - t0
             pts = len(self.stage2_traj.waypoints)
+            fit = mspec.fit_warnings(self.stage2_traj.waypoints)
             self._setup_view_controls()
             note = ""
             stats = thickness_check.measure_model(self.stage1_model)
@@ -1144,6 +1443,15 @@ class MainWindow(QMainWindow):
                 _, chk = self._show_check(stats, "measured on the slice")
                 if not chk.ok:
                     note = "\nWarning (measured layer gaps): " + "; ".join(chk.messages)
+                if chk.tilt_warning:
+                    note += "\nWarning (measured): " + chk.tilt_warning
+            if fit:
+                note += "\nWarning (build volume): " + "; ".join(fit)
+            rng = mspec.range_warnings(self.stage3_traj.states)
+            if rng:
+                for msg in rng:
+                    logger.warning("Machine range: %s", msg)
+                note += "\nWarning (machine range): " + "; ".join(rng)
             self.lbl_metrics.setText(f"Done in {dt:.2f}s | Layers: {self._layer_total()} | Pts: {pts}{note}")
             self.update_viewport()
 

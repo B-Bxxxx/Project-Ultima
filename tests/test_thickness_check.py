@@ -133,3 +133,29 @@ def test_gui_button_visible_when_transition_helps():
     assert w.btn_suggested.isVisibleTo(w)
     w.use_suggested_transition()
     assert w.trans_height_spin.value() > 2.0
+
+
+def test_tilt_of_the_layer_surfaces_is_measured_and_warned_about_for_3_axis_machines():
+    import math
+    tc = __import__("src.stage1_slicer.thickness_check", fromlist=["x"])
+    v = [0.2, 0.2, 0.2]
+    n = [0.2, 0.2 * math.cos(math.radians(30)), 0.2 * math.cos(math.radians(10))]
+    assert tc.tilt_deg(v, n) == pytest.approx(30.0)
+    st = tc.GapStats(0.2, 0.2, min(n), 0.2, 3, tc.tilt_deg(v, n))
+    assert tc.check(st, 0.4, False, 0.2, max_tilt_deg=25.0).tilt_warning is not None     # 30 deg > 25 deg
+    assert tc.check(st, 0.4, False, 0.2, max_tilt_deg=35.0).tilt_warning is None
+    assert tc.check(st, 0.4, True, 0.2, max_tilt_deg=25.0).tilt_warning is None          # rotary machines follow the surface
+    assert tc.check(st, 0.4, False, 0.2).tilt_warning is None                           # no limit given
+    assert tc.tilt_deg([0.2], [0.2]) == 0.0
+
+
+def test_probe_and_measure_report_the_slope_of_a_tilted_function():
+    import trimesh
+    from src.stage1_slicer import thickness_check as tc
+    mesh = trimesh.creation.box(extents=(20, 20, 10))
+    mesh.apply_translation((0, 0, 5))
+    p = {"layer_height": 0.2, "transition_height": 2.0, "expression": "0.5*x", "expression_params": {}}   # slope atan(0.5) = 26.6 deg
+    st = tc.probe(mesh, "custom_expr", p)
+    assert st.tilt_max_deg == pytest.approx(26.565, abs=0.3)
+    flat = tc.probe(mesh, "custom_expr", {**p, "expression": "0.0"})
+    assert flat.tilt_max_deg == pytest.approx(0.0, abs=1e-6)

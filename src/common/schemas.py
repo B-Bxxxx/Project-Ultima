@@ -24,6 +24,9 @@ class MinimalPrintProfile(BaseModel):
         description="Number of perimeters (walls). Profile files may also call it 'wall_count'.")
     bottom_solid_layers: int = Field(3, ge=0, description="Number of solid bottom skin layers (0 disables the bottom skin)")
     top_solid_layers: int = Field(3, ge=0, description="Number of solid top skin layers (0 disables the top skin)")
+    brim_width: float = Field(0.0, ge=0.0, description="Width in mm of the brim: concentric loops around the outside of the first layer for bed adhesion (0 = no brim). Rounded down to whole nozzle widths.")
+    skirt_loops: int = Field(0, ge=0, description="Number of skirt loops: free-standing loops around the first layer (and its brim), `skirt_distance` away from it, to prime the nozzle (0 = no skirt).")
+    skirt_distance: float = Field(3.0, ge=0.0, description="Gap in mm between the part (or its brim) and the innermost skirt loop.")
     infill_density: float = Field(0.2, ge=0.0, le=1.0, description="Sparse infill density as a FRACTION 0..1 (0.2 = 20 %)")
     infill_overlap: float = Field(0.15, ge=0.0, le=0.5, description="Infill (and skin) lines reach this fraction of the nozzle diameter into the innermost wall / into each other, for a good bond. 0 = lines only touch.")
     infill_pattern: str = Field("lines", description="Infill pattern. Only 'lines' (parallel zigzag) is implemented; other values fall back to it with a warning.")
@@ -38,7 +41,8 @@ class MinimalPrintProfile(BaseModel):
     min_segment_length: float = Field(0.2, ge=0.0, description="Points next to segments shorter than this (mm) are merged while the path stays within 3x the tolerance (old 8/32-bit boards cannot plan very short segments). 0 = off.")
     path_angle_tolerance_deg: float = Field(1.0, ge=0.0, description="A point is also kept when the tool axis (surface normal) would turn by more than this (deg) against the line that replaces it. 0 = ignore the normals.")
     seam_angle_deg: Optional[float] = Field(90.0, description="Direction of the wall seam, seen from the part: every wall ring starts at its vertex farthest in this direction (0 = +X, 90 = +Y = back, counter-clockwise), so the seam is one line. None = keep the start point of the Stage 1 ring.")
-    include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
+    include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with the rotary axes below). False for strictly 3-axis G-code.")
+    rotary_axes: str = Field("BC", description="Letters of the rotary axes written to the G-code when include_rotary_axes is on, in this order (A, B, C; e.g. 'BC', 'AC', 'B')")
 
     # --- speeds (mm/min) ---
     print_speed: float = Field(1500.0, gt=0.0, description="Feedrate of extruding moves in mm/min")
@@ -82,7 +86,7 @@ class SpatialContour(BaseModel):
     thicknesses: Optional[List[float]] = Field(None, description="Ordered list of local layer thicknesses at each point")
     vertical_gaps: Optional[List[float]] = Field(None, description="Stage 1: vertical (Z) distance from this layer's surface to the next layer at each point - the gap a vertical (3-axis) nozzle works in")
     normal_gaps: Optional[List[float]] = Field(None, description="Stage 1: distance between this and the next layer measured along the layer's surface normal at each point - the gap a nozzle aligned with the normal (5-axis) works in")
-    feature_type: str = Field("boundary", description="Type of feature: boundary, outer_wall, inner_wall, bottom_solid, top_solid or infill (sparse)")
+    feature_type: str = Field("boundary", description="Type of feature: boundary, skirt, brim, outer_wall, inner_wall, bottom_solid, top_solid or infill (sparse)")
 
 class UniversalLayer(BaseModel):
     """
@@ -151,8 +155,17 @@ class MachineConfig(BaseModel):
     pivot_offset_x: float = Field(0.0, description="Pivot offset X in mm")
     pivot_offset_y: float = Field(0.0, description="Pivot offset Y in mm")
     pivot_offset_z: float = Field(0.0, description="Pivot offset Z in mm")
+    c_axis_x: float = Field(0.0, description="Machine X of the C axis (table centre) at B = 0; for a 3-axis / swivel-head machine the machine X of the part origin (0, 0)")
+    c_axis_y: float = Field(0.0, description="Machine Y of the C axis (table centre) at B = 0 / of the part origin")
+    c_axis_z: float = Field(0.0, description="Machine Z of the table surface at the C axis at B = 0 / of the part origin")
     eccentricity_x: float = Field(0.0, description="C-axis eccentricity X in mm")
     eccentricity_y: float = Field(0.0, description="C-axis eccentricity Y in mm")
+    joint_tolerance: float = Field(0.02, description="Rotary machines: maximum deviation (mm, in the part frame) of the firmware's straight-line axis interpolation from the intended straight segment; longer segments are split until they are inside it. 0 = off")
+    a_axis_dir: float = Field(1.0, description="Informational copy of the A joint's sign (generic_chain machines)")
+    a_axis_min: float = Field(0.0, description="Minimum A-axis angle in degrees (generic_chain machines)")
+    a_axis_max: float = Field(0.0, description="Maximum A-axis angle in degrees (generic_chain machines)")
+    b_axis_dir: float = Field(1.0, description="+1: the machine's positive B turns like the program's (seen from the front, clockwise); -1: opposite. Applied to the B value written to the G-code")
+    c_axis_dir: float = Field(1.0, description="+1: the machine's positive C turns like the program's (seen from above, counter-clockwise); -1: opposite")
     b_axis_min: float = Field(..., description="Minimum B-axis angle in degrees")
     b_axis_max: float = Field(..., description="Maximum B-axis angle in degrees")
     c_axis_min: float = Field(..., description="Minimum C-axis angle in degrees")
@@ -160,6 +173,7 @@ class MachineConfig(BaseModel):
     b_axis_vector: Tuple[float, float, float] = Field((0.0, 1.0, 0.0), description="B-axis rotation vector")
     c_axis_vector: Tuple[float, float, float] = Field((0.0, 0.0, 1.0), description="C-axis rotation vector")
     max_3axis_tilt_deg: float = Field(25.0, description="Maximum safe surface tilt for a 3-axis active-Z machine before collision risk.")
+    chain: Optional[Dict[str, Any]] = Field(None, description="Numeric chain description for the 'generic_chain' solver (joints, axes, limits); None for the hand-written solvers")
 
 class MachineStateVector(BaseModel):
     """
@@ -169,6 +183,7 @@ class MachineStateVector(BaseModel):
     x: float = Field(..., description="Machine X position")
     y: float = Field(..., description="Machine Y position")
     z: float = Field(..., description="Machine Z position")
+    a: float = Field(0.0, description="Machine A-axis angle in degrees (only the generic_chain solver on a machine with an A axis)")
     b: float = Field(..., description="Machine B-axis angle in degrees")
     c: float = Field(..., description="Machine C-axis angle in degrees")
     extrusion_volume: float = Field(0.0, description="Extrusion volume for this move")

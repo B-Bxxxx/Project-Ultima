@@ -78,5 +78,5 @@ def status_text(item, n_layers: int) -> str:
     kind = "travel" if item.is_travel_move else item.feature_type
     s = f"Layer {item.layer_index + 1}/{n_layers} | {kind} | X{item.x:.2f} Y{item.y:.2f} Z{item.z:.2f}"
     if hasattr(item, "b") and hasattr(item, "c"):
-        s += f" | B{item.b:.2f} C{item.c:.2f}"
+        s += f" | {'A%.2f ' % item.a if abs(getattr(item, 'a', 0.0)) > 1e-9 else ''}B{item.b:.2f} C{item.c:.2f}"
     return s

@@ -1,0 +1,167 @@
+{
+  "format": "cam-machine",
+  "version": 1,
+  "name": "Chain demo: 5-axis swivel head (XYZBC)",
+  "description": "The swivel-head machine as a mathematical chain. Tool: X, Y, Z carry C (rotation about Z) carries B (tilt about Y); both turn about the pivot, which lies at -pivot_offset from the nozzle tip. Table: fixed, the part origin sits at (c_axis_x, c_axis_y, c_axis_z).",
+  "kinematics": "generic_chain",
+  "axes": [
+    "X",
+    "Y",
+    "Z",
+    "B",
+    "C"
+  ],
+  "parameters": {
+    "c_axis_x": {
+      "label": "C axis X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_y": {
+      "label": "C axis Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_z": {
+      "label": "C axis Z (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "joint_tolerance": {
+      "label": "Interpolation tolerance",
+      "unit": "mm",
+      "default": 0.02,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "b_axis_dir": {
+      "label": "B direction (+1 / -1)",
+      "unit": "",
+      "default": 1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 2.0
+    },
+    "c_axis_dir": {
+      "label": "C direction (+1 / -1)",
+      "unit": "",
+      "default": 1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 2.0
+    },
+    "b_axis_min": {
+      "label": "B min",
+      "unit": "deg",
+      "default": -90.0,
+      "min": -180.0,
+      "max": 180.0
+    },
+    "b_axis_max": {
+      "label": "B max",
+      "unit": "deg",
+      "default": 90.0,
+      "min": -180.0,
+      "max": 180.0
+    },
+    "c_axis_min": {
+      "label": "C min",
+      "unit": "deg",
+      "default": -36000.0,
+      "min": -360000.0,
+      "max": 360000.0
+    },
+    "c_axis_max": {
+      "label": "C max",
+      "unit": "deg",
+      "default": 36000.0,
+      "min": -360000.0,
+      "max": 360000.0
+    },
+    "pivot_offset_x": {
+      "label": "B axis X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "pivot_offset_y": {
+      "label": "B axis Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "pivot_offset_z": {
+      "label": "B axis Z (machine)",
+      "unit": "mm",
+      "default": 0.0
+    }
+  },
+  "chain": {
+    "tool": [
+      {
+        "axis": "X",
+        "type": "linear",
+        "direction": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "axis": "Y",
+        "type": "linear",
+        "direction": [
+          0,
+          1,
+          0
+        ]
+      },
+      {
+        "axis": "Z",
+        "type": "linear",
+        "direction": [
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "axis": "C",
+        "type": "rotary",
+        "sign": "c_axis_dir",
+        "min": "c_axis_min",
+        "max": "c_axis_max",
+        "origin": [
+          "-pivot_offset_x",
+          "-pivot_offset_y"
+        ]
+      },
+      {
+        "axis": "B",
+        "type": "rotary",
+        "sign": "b_axis_dir",
+        "min": "b_axis_min",
+        "max": "b_axis_max",
+        "origin": [
+          "-pivot_offset_x",
+          "-pivot_offset_z"
+        ]
+      }
+    ],
+    "table": [],
+    "part_origin": [
+      "c_axis_x",
+      "c_axis_y",
+      "c_axis_z"
+    ],
+    "tip": [
+      0,
+      0,
+      0
+    ],
+    "tool_axis": [
+      0,
+      0,
+      1
+    ]
+  }
+}

@@ -31,6 +31,21 @@
       "min": 0.0,
       "max": 90.0,
       "description": "A warning is logged when a layer surface is tilted more than this."
+    },
+    "c_axis_x": {
+      "label": "Part origin X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_y": {
+      "label": "Part origin Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_z": {
+      "label": "Part origin Z (machine)",
+      "unit": "mm",
+      "default": 0.0
     }
   }
 }

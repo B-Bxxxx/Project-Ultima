@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver, tool_alignment
+from src.stage3_kinematics.base import BaseKinematicSolver, resolve_c_angles, tool_alignment
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 @KinematicsRegistry.register("trunnion_table_xyzbc")
@@ -18,8 +18,15 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
         # Unpack configurations
         px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
         ex, ey = config.eccentricity_x, config.eccentricity_y
+        c_axis = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])      # machine position of the C axis (B = 0)
         b_min, b_max = config.b_axis_min, config.b_axis_max
+        b_sign = -1.0 if config.b_axis_dir < 0 else 1.0           # direction of the machine's B / C relative to the program's
+        c_sign = -1.0 if config.c_axis_dir < 0 else 1.0
         c_min, c_max = config.c_axis_min, config.c_axis_max
+        if b_sign < 0:
+            b_min, b_max = -b_max, -b_min
+        if c_sign < 0:
+            c_min, c_max = -c_max, -c_min
 
         # We need to compute C angles and unwrap them to prevent 360-degree flips
         raw_c_angles = []
@@ -74,9 +81,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
             b_angles.append(b_deg)
             valid_waypoints.append(wp)
 
-        # Unwrap C angles
-        unwrapped_c_rad = np.unwrap(raw_c_angles)
-        c_angles = np.degrees(unwrapped_c_rad)
+        # C continuous inside a move chain, re-chosen closest to zero at the start of each chain
+        c_angles = resolve_c_angles(raw_c_angles, b_angles, valid_waypoints, c_min, c_max)
 
         # Second pass: Compute Machine XYZ taking into account pivot offsets and eccentricity
         for idx, wp in enumerate(valid_waypoints):
@@ -119,7 +125,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
 
             # Kinematic chain order for Trunnion (Bed -> C -> B):
             # First rotate by C around origin
-            P_c = R_C @ P_e
+            # (the C axis sits at c_axis in the cradle frame, so it moves with the B tilt: the offset comes BEFORE B)
+            P_c = c_axis + R_C @ P_e
 
             # Then tilt by B around pivot
             V_pivot = P_c - P_pivot
@@ -132,8 +139,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 x=float(P_mach[0]),
                 y=float(P_mach[1]),
                 z=float(P_mach[2]),
-                b=float(b_deg),
-                c=float(c_deg),
+                b=float(b_deg * b_sign) + 0.0,
+                c=float(c_deg * c_sign) + 0.0,
                 tool_alignment=tool_alignment(wp, (-np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume,
                 feedrate=wp.feedrate,
@@ -144,3 +151,17 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
             states.append(state)
 
         return MachineTrajectory(states=states)
+
+    def to_part_batch(self, config: MachineConfig, poses):
+        """Inverse of solve(): P = R_C^T (R_B^T (M - pivot) + pivot - c_axis) - eccentricity."""
+        S = np.asarray(poses, float).reshape(-1, 5)
+        b = np.radians(S[:, 3] * (-1.0 if config.b_axis_dir < 0 else 1.0))
+        c = np.radians(S[:, 4] * (-1.0 if config.c_axis_dir < 0 else 1.0))
+        pv = np.array([config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z])
+        ca = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])
+        v = S[:, :3] - pv
+        cb, sb, cc, sc = np.cos(b), np.sin(b), np.cos(c), np.sin(c)
+        u = np.column_stack([cb * v[:, 0] - sb * v[:, 2], v[:, 1], sb * v[:, 0] + cb * v[:, 2]]) + pv - ca
+        return np.column_stack([cc * u[:, 0] + sc * u[:, 1] - config.eccentricity_x,
+                                -sc * u[:, 0] + cc * u[:, 1] - config.eccentricity_y,
+                                u[:, 2]])

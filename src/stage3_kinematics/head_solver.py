@@ -1,6 +1,6 @@
 import numpy as np
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver, tool_alignment
+from src.stage3_kinematics.base import BaseKinematicSolver, resolve_c_angles, tool_alignment
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 @KinematicsRegistry.register("swivel_head_xyzbc")
@@ -15,7 +15,13 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
         px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
         ex, ey = config.eccentricity_x, config.eccentricity_y
         b_min, b_max = config.b_axis_min, config.b_axis_max
+        b_sign = -1.0 if config.b_axis_dir < 0 else 1.0           # direction of the machine's B / C relative to the program's
+        c_sign = -1.0 if config.c_axis_dir < 0 else 1.0
         c_min, c_max = config.c_axis_min, config.c_axis_max
+        if b_sign < 0:
+            b_min, b_max = -b_max, -b_min
+        if c_sign < 0:
+            c_min, c_max = -c_max, -c_min
 
         raw_c_angles = []
         b_angles = []
@@ -50,8 +56,7 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             b_angles.append(b_deg)
             valid_waypoints.append(wp)
 
-        unwrapped_c_rad = np.unwrap(raw_c_angles)
-        c_angles = np.degrees(unwrapped_c_rad)
+        c_angles = resolve_c_angles(raw_c_angles, b_angles, valid_waypoints, c_min, c_max)
 
         for idx, wp in enumerate(valid_waypoints):
             b_deg = max(b_min, min(b_max, b_angles[idx]))
@@ -85,11 +90,11 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             # (Where P_pivot is distance from pivot to tool tip)
             offset = P_pivot - R_C @ (R_B @ P_pivot)
 
-            P_mach = P + offset
+            P_mach = P + offset + np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])    # part origin on the bed
 
             state = MachineStateVector(
                 x=float(P_mach[0]), y=float(P_mach[1]), z=float(P_mach[2]),
-                b=float(b_deg), c=float(c_deg),
+                b=float(b_deg * b_sign) + 0.0, c=float(c_deg * c_sign) + 0.0,
                 tool_alignment=tool_alignment(wp, (np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
                 feature_type=wp.feature_type,
@@ -98,6 +103,19 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             states.append(state)
 
         return MachineTrajectory(states=states)
+
+    def to_part_batch(self, config: MachineConfig, poses):
+        """Inverse of solve(): P = M - (pivot - R_C R_B pivot) - c_axis."""
+        S = np.asarray(poses, float).reshape(-1, 5)
+        b = np.radians(S[:, 3] * (-1.0 if config.b_axis_dir < 0 else 1.0))
+        c = np.radians(S[:, 4] * (-1.0 if config.c_axis_dir < 0 else 1.0))
+        px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
+        cb, sb, cc, sc = np.cos(b), np.sin(b), np.cos(c), np.sin(c)
+        ax, ay, az = cb * px + sb * pz, py, -sb * px + cb * pz            # R_B pivot
+        rx, ry, rz = cc * ax - sc * ay, sc * ax + cc * ay, az              # R_C R_B pivot
+        off = np.column_stack([px - rx, py - ry, pz - rz])
+        return S[:, :3] - off - np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])
+
 
 @KinematicsRegistry.register("planar_3axis_xyz")
 class Cartesian3AxisSolver(BaseKinematicSolver):
@@ -125,7 +143,7 @@ class Cartesian3AxisSolver(BaseKinematicSolver):
                     warned = True
 
             state = MachineStateVector(
-                x=wp.x, y=wp.y, z=wp.z,
+                x=wp.x + config.c_axis_x, y=wp.y + config.c_axis_y, z=wp.z + config.c_axis_z,
                 b=0.0, c=0.0,
                 tool_alignment=tool_alignment(wp, (0.0, 0.0, 1.0)),      # the nozzle of a 3-axis machine is always vertical
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
