@@ -24,8 +24,10 @@ GROWTH_LIMIT = 6              # the refined trajectory may have at most this man
 SAMPLES = (0.25, 0.5, 0.75)
 
 
-def _poses(result: MachineTrajectory) -> np.ndarray:
-    return np.array([[s.x, s.y, s.z, s.b, s.c] for s in result.states], float)
+def _poses(result: MachineTrajectory, columns: int = 5) -> np.ndarray:
+    """[x, y, z, b, c] per state (+ a as 6th column for solvers that have an A axis)."""
+    cols = [[s.x, s.y, s.z, s.b, s.c] + ([s.a] if columns > 5 else []) for s in result.states]
+    return np.array(cols, float).reshape(-1, columns)
 
 
 def _bad_segments(solver, config, wps: List[CLDataWaypoint], S: np.ndarray, tol: float):
@@ -58,13 +60,14 @@ def solve_refined(solver: BaseKinematicSolver, trajectory: CLDataTrajectory, con
                   tolerance=None) -> MachineTrajectory:
     """solver.solve + the interpolation check / segment splitting described above (a no-op for 3-axis machines)."""
     tol = float(config.joint_tolerance if tolerance is None else tolerance)
+    cols = int(getattr(solver, "pose_columns", 5))
     result = solver.solve(trajectory, config)
     if tol <= 0.0 or len(result.states) < 2 or solver.to_part_batch(config, np.zeros((1, 5))) is None:
         return result
     wps = list(trajectory.waypoints)
     original = len(wps)
     for it in range(MAX_ITERATIONS):
-        S = _poses(result)
+        S = _poses(result, cols)
         if len(S) != len(wps):
             logger.warning("Joint tolerance: the solver dropped points; the interpolation check was skipped")
             return result
@@ -85,7 +88,7 @@ def solve_refined(solver: BaseKinematicSolver, trajectory: CLDataTrajectory, con
         wps = new
         result = solver.solve(CLDataTrajectory(waypoints=wps), config)
     else:
-        S = _poses(result)
+        S = _poses(result, cols)
         bad, dev = _bad_segments(solver, config, wps, S, tol) if len(S) == len(wps) else (np.zeros(1, bool), np.zeros(1))
         if bad.any():
             logger.warning("Joint tolerance: %d segments still deviate up to %.3f mm after %d splits",

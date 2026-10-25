@@ -139,37 +139,24 @@
       {
         "axis": "B",
         "type": "rotary",
-        "direction": [
-          0,
-          1,
-          0
-        ],
-        "point": [
-          "pivot_offset_x",
-          "pivot_offset_y",
-          "pivot_offset_z"
-        ],
         "sign": "b_axis_dir",
         "min": "b_axis_min",
-        "max": "b_axis_max"
+        "max": "b_axis_max",
+        "origin": [
+          "pivot_offset_x",
+          "pivot_offset_z"
+        ]
       },
       {
         "axis": "C",
         "type": "rotary",
-        "direction": [
-          0,
-          0,
-          1
-        ],
-        "point": [
-          "c_axis_x",
-          "c_axis_y",
-          "c_axis_z"
-        ],
         "sign": "c_axis_dir",
         "min": "c_axis_min",
         "max": "c_axis_max",
-        "continuous": true
+        "origin": [
+          "c_axis_x",
+          "c_axis_y"
+        ]
       }
     ],
     "part_origin": [

@@ -8,14 +8,16 @@ A chain is two lists of joints, each listed OUTERMOST FIRST (= "who carries whom
 
 A joint is given in the machine's ZERO POSE (all joints at 0), in the machine base frame:
 
-    {"axis": "B", "type": "rotary", "direction": [0,1,0], "point": [px,py,pz],
-     "sign": 1, "min": -90, "max": 90, "continuous": false}
+    {"axis": "B", "type": "rotary", "origin": [px, pz], "sign": 1, "min": -90, "max": 90}
     {"axis": "X", "type": "linear", "direction": [1,0,0], "sign": 1}
 
-`direction` is the right-handed rotation axis / the translation direction, `point` a point on the rotation axis,
+A rotary axis letter fixes its direction (A about X, B about Y, C about Z; "direction" may be given but must match),
+`origin` gives the two coordinates of the axis line (A: y z, B: x z, C: x y; or `point`: any 3D point on it),
+a linear joint has a free `direction` (the translation direction),
 `sign` (+1/-1) the direction of the machine's axis value relative to that mathematical direction (machine value =
 sign * mathematical value), `min`/`max` the limits of the MACHINE value, `continuous` a rotary axis that may wind
-around freely (its angle is re-chosen at every travel move, see base.resolve_c_angles).
+around freely (its angle is re-chosen at every travel move, see base.resolve_c_angles). If `continuous` is left out it
+follows from the range: a range of 360 deg or more (or no limits at all) can turn around, a smaller one cannot.
 
 Product of exponentials: T_branch = T_1(q_1) T_2(q_2) ... T_n(q_n), every T_j built from its zero-pose axis.
 Position of the nozzle tip in the base frame:  T_tool(tip).  Position of a part point P:  T_table(P + part_origin).
@@ -32,9 +34,13 @@ import numpy as np
 
 from src.common.param_spec import SpecError
 
-AXIS_NAMES = ("X", "Y", "Z", "B", "C")
+AXIS_NAMES = ("X", "Y", "Z", "A", "B", "C")
 LINEAR_NAMES = ("X", "Y", "Z")
-ROTARY_NAMES = ("B", "C")
+ROTARY_NAMES = ("A", "B", "C")
+# A rotary axis letter fixes its direction: A turns about X, B about Y, C about Z (right-handed). Where the axis lies
+# (its origin) is free: a line parallel to X/Y/Z is fixed by TWO coordinates (A: y z, B: x z, C: x y).
+ROTARY_DIRECTION = {"A": (1.0, 0.0, 0.0), "B": (0.0, 1.0, 0.0), "C": (0.0, 0.0, 1.0)}
+ROTARY_ORIGIN_COORDS = {"A": (1, 2), "B": (0, 2), "C": (0, 1)}
 _BIN = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
 _UN = {ast.USub: operator.neg, ast.UAdd: operator.pos}
 
@@ -100,7 +106,7 @@ class Joint:
     sign: float = 1.0
     lo: float = -np.inf                # limits of the MACHINE value (deg for rotary)
     hi: float = np.inf
-    continuous: bool = False
+    continuous: bool = False                # derived from the range when the file does not say
 
     def math_limits(self):
         """Limits of the mathematical angle (deg): machine value = sign * math value."""
@@ -150,7 +156,7 @@ class Chain:
     def _joint(raw, params, where) -> Joint:
         if not isinstance(raw, dict):
             raise ChainError(f"{where}a joint must be an object")
-        extra = set(raw) - {"axis", "type", "direction", "point", "sign", "min", "max", "continuous"}
+        extra = set(raw) - {"axis", "type", "direction", "point", "origin", "sign", "min", "max", "continuous"}
         if extra:
             raise ChainError(f"{where}unknown joint field(s) {sorted(extra)}")
         axis = raw.get("axis")
@@ -164,16 +170,38 @@ class Chain:
         sign = eval_expr(raw.get("sign", 1), params, f"{where}sign: ")
         if abs(abs(sign) - 1.0) > 1e-9:
             raise ChainError(f"{where}\"sign\" must be +1 or -1")
-        j = Joint(axis=axis, rotary=typ == "rotary", direction=_vec(raw.get("direction"), params, f"{where}direction ", unit=True),
-                  point=_vec(raw.get("point"), params, f"{where}point ", default=[0, 0, 0]), sign=1.0 if sign > 0 else -1.0,
-                  continuous=bool(raw.get("continuous", False)))
+        if typ == "rotary":
+            direction = np.array(ROTARY_DIRECTION[axis])
+            if raw.get("direction") is not None:
+                given = _vec(raw["direction"], params, f"{where}direction ", unit=True)
+                if np.linalg.norm(given - direction) > 1e-9:
+                    raise ChainError(f"{where}axis {axis} turns about {list(map(int, direction))} (A: X, B: Y, C: Z); "
+                                     f"use \"sign\" for the other turning direction")
+            if "point" in raw and "origin" in raw:
+                raise ChainError(f'{where}give either "point" or "origin", not both')
+            if "origin" in raw:
+                o = raw["origin"]
+                if not isinstance(o, (list, tuple)) or len(o) != 2:
+                    raise ChainError(f'{where}"origin" must be 2 numbers (the coordinates of the axis line: A: y z, B: x z, C: x y)')
+                point = np.zeros(3)
+                for idx, v in zip(ROTARY_ORIGIN_COORDS[axis], o):
+                    point[idx] = eval_expr(v, params, f"{where}origin: ")
+            else:
+                point = _vec(raw.get("point"), params, f"{where}point ", default=[0, 0, 0])
+        else:
+            direction = _vec(raw.get("direction"), params, f"{where}direction ", unit=True)
+            point = np.zeros(3)
+            if "origin" in raw or "point" in raw:
+                raise ChainError(f"{where}a linear joint has no origin / point")
+        j = Joint(axis=axis, rotary=typ == "rotary", direction=direction, point=point, sign=1.0 if sign > 0 else -1.0)
         if j.rotary:
             for key, attr in (("min", "lo"), ("max", "hi")):
                 if key in raw:
                     setattr(j, attr, eval_expr(raw[key], params, f"{where}{key}: "))
             if j.lo > j.hi:
                 raise ChainError(f'{where}"min" is greater than "max"')
-        elif j.continuous or "min" in raw or "max" in raw:
+            j.continuous = bool(raw["continuous"]) if "continuous" in raw else bool(j.hi - j.lo >= 360.0 - 1e-9)
+        elif "continuous" in raw or "min" in raw or "max" in raw:
             raise ChainError(f"{where}limits / continuous only apply to rotary joints (the build volume limits the linear axes)")
         return j
 
@@ -183,9 +211,7 @@ class Chain:
             raise ChainError(f"{where}every axis may appear only once in the chain")
         rot = self.rotaries()
         if len(rot) > 2:
-            raise ChainError(f"{where}at most two rotary joints are supported for now (the third one - 6 axis - is in progress)")
-        if len(rot) == 2 and np.linalg.norm(np.cross(rot[0].direction, rot[1].direction)) < 1e-6:
-            raise ChainError(f"{where}the two rotary axes must not be parallel")
+            raise ChainError(f"{where}at most two rotary joints are supported (5 axis); the third one - 6 axis - is in progress")
         lin = [j for j in self.joints if not j.rotary]
         if len(lin) != 3 or {j.axis for j in lin} != set(LINEAR_NAMES):
             raise ChainError(f"{where}the chain needs exactly one X, one Y and one Z linear joint")

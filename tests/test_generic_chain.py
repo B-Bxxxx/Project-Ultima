@@ -167,8 +167,8 @@ def _chain(**kw):
 
 
 @pytest.mark.parametrize("bad", [
-    _chain(table=[{"axis": "A", "type": "rotary", "direction": [1, 0, 0]}]),                                      # A not supported yet
-    _chain(table=[{"axis": "B", "type": "rotary", "direction": [0, 1, 0]}, {"axis": "C", "type": "rotary", "direction": [0, 1, 0]}]),   # parallel
+    _chain(table=[{"axis": "A", "type": "rotary", "direction": [0, 1, 0]}]),                                      # A turns about X
+    _chain(table=[{"axis": "B", "type": "rotary", "direction": [0, 0, 1]}]),                                      # B turns about Y
     _chain(table=[{"axis": "B", "type": "rotary", "direction": [0, 0, 0]}]),                                      # zero vector
     _chain(part_origin=["nope", 0, 0]),                                                                           # unknown parameter
     _chain(part_origin=["__import__('os')", 0, 0]),                                                               # no code

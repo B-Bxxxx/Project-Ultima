@@ -41,7 +41,8 @@ class MinimalPrintProfile(BaseModel):
     min_segment_length: float = Field(0.2, ge=0.0, description="Points next to segments shorter than this (mm) are merged while the path stays within 3x the tolerance (old 8/32-bit boards cannot plan very short segments). 0 = off.")
     path_angle_tolerance_deg: float = Field(1.0, ge=0.0, description="A point is also kept when the tool axis (surface normal) would turn by more than this (deg) against the line that replaces it. 0 = ignore the normals.")
     seam_angle_deg: Optional[float] = Field(90.0, description="Direction of the wall seam, seen from the part: every wall ring starts at its vertex farthest in this direction (0 = +X, 90 = +Y = back, counter-clockwise), so the seam is one line. None = keep the start point of the Stage 1 ring.")
-    include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with B and C). False for strictly 3-axis G-code.")
+    include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with the rotary axes below). False for strictly 3-axis G-code.")
+    rotary_axes: str = Field("BC", description="Letters of the rotary axes written to the G-code when include_rotary_axes is on, in this order (A, B, C; e.g. 'BC', 'AC', 'B')")
 
     # --- speeds (mm/min) ---
     print_speed: float = Field(1500.0, gt=0.0, description="Feedrate of extruding moves in mm/min")
@@ -160,6 +161,9 @@ class MachineConfig(BaseModel):
     eccentricity_x: float = Field(0.0, description="C-axis eccentricity X in mm")
     eccentricity_y: float = Field(0.0, description="C-axis eccentricity Y in mm")
     joint_tolerance: float = Field(0.02, description="Rotary machines: maximum deviation (mm, in the part frame) of the firmware's straight-line axis interpolation from the intended straight segment; longer segments are split until they are inside it. 0 = off")
+    a_axis_dir: float = Field(1.0, description="Informational copy of the A joint's sign (generic_chain machines)")
+    a_axis_min: float = Field(0.0, description="Minimum A-axis angle in degrees (generic_chain machines)")
+    a_axis_max: float = Field(0.0, description="Maximum A-axis angle in degrees (generic_chain machines)")
     b_axis_dir: float = Field(1.0, description="+1: the machine's positive B turns like the program's (seen from the front, clockwise); -1: opposite. Applied to the B value written to the G-code")
     c_axis_dir: float = Field(1.0, description="+1: the machine's positive C turns like the program's (seen from above, counter-clockwise); -1: opposite")
     b_axis_min: float = Field(..., description="Minimum B-axis angle in degrees")
@@ -179,6 +183,7 @@ class MachineStateVector(BaseModel):
     x: float = Field(..., description="Machine X position")
     y: float = Field(..., description="Machine Y position")
     z: float = Field(..., description="Machine Z position")
+    a: float = Field(0.0, description="Machine A-axis angle in degrees (only the generic_chain solver on a machine with an A axis)")
     b: float = Field(..., description="Machine B-axis angle in degrees")
     c: float = Field(..., description="Machine C-axis angle in degrees")
     extrusion_volume: float = Field(0.0, description="Extrusion volume for this move")

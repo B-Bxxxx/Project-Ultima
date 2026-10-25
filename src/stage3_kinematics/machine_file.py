@@ -36,7 +36,7 @@ FORMAT = "cam-machine"
 VERSION = 1
 PLANAR = "planar_3axis_xyz"
 GENERIC = "generic_chain"
-VALID_AXES = ("X", "Y", "Z", "B", "C")
+VALID_AXES = ("X", "Y", "Z", "A", "B", "C")
 CONFIG_FIELDS = ("joint_tolerance", "b_axis_dir", "c_axis_dir", "c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
                  "b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max", "max_3axis_tilt_deg")
 ROTARY_REQUIRED = ("b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max")
@@ -59,7 +59,12 @@ class MachineSpec:
 
     @property
     def has_rotary_axes(self) -> bool:
-        return "B" in self.axes or "C" in self.axes
+        return any(a in self.axes for a in "ABC")
+
+    @property
+    def rotary_letters(self) -> str:
+        """The rotary axes in G-code order, e.g. 'BC', 'AC', 'B'."""
+        return "".join(a for a in "ABC" if a in self.axes)
 
     def fit_warnings(self, waypoints) -> list:
         """
@@ -147,6 +152,8 @@ class MachineSpec:
         else:
             if chain is not None:
                 raise MachineFileError(f'{where}"chain" is only used by kinematics "{GENERIC}"')
+            if "A" in axes:
+                raise MachineFileError(f'{where}the A axis is only supported by kinematics "{GENERIC}"')
             rotary = {"B", "C"} & set(axes)
             if rotary and rotary != {"B", "C"}:
                 raise MachineFileError(f'{where}a rotary machine needs both B and C in "axes"')

@@ -10,6 +10,8 @@ Algorithm per waypoint (all vectorised):
      joint is unwound with base.resolve_c_angles (continuous inside a move chain, re-chosen near zero at every travel);
   3. position: the X, Y, Z linear joints are solved from the linear equation  tool(tip) = table(P + part_origin).
 """
+import logging
+
 import numpy as np
 
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
@@ -42,6 +44,7 @@ def _fit_to_limits(deg, lo, hi):
 
 @KinematicsRegistry.register("generic_chain")
 class GenericChainSolver(BaseKinematicSolver):
+    pose_columns = 6                  # refine passes [x, y, z, b, c, a] (the hand-written solvers get the 5-column pose)
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -107,20 +110,25 @@ class GenericChainSolver(BaseKinematicSolver):
         tilt = None
         if free and any(j.continuous for j in rot):
             tilt = np.abs(_wrap(ang[free[0].axis]))
+        e_dir = ch.tool_axis
         out = {}
         for j in rot:
             lo, hi = lim[j.axis]
             if not j.continuous:
                 a, _ = _fit_to_limits(ang[j.axis], lo, hi)
                 out[j.axis] = np.clip(a, lo, hi)
+                if np.any(np.abs(out[j.axis] - a) > 1e-6):
+                    logging.getLogger(__name__).warning("%s axis: the layer normal needs more than the limits allow (%g..%g deg); "
+                                                        "the angle was clamped, the nozzle is not along the surface normal there", j.axis, *lim[j.axis])
             else:
                 raw = np.radians(ang[j.axis])
-                if tilt is not None:                            # azimuth undefined at (almost) zero tilt: keep the previous value
+                azimuth = tilt is not None and abs(abs(float(j.direction @ e_dir)) - 1.0) < 1e-9     # turns about the nozzle axis
+                if azimuth:                                     # azimuth undefined at (almost) zero tilt: keep the previous value
                     sing = np.radians(tilt) < SINGULAR_TILT_RAD
                     if sing.any():
                         last = np.maximum.accumulate(np.where(~sing, np.arange(n), -1))
                         raw = np.where(last >= 0, raw[np.maximum(last, 0)], 0.0)
-                hold = tilt if tilt is not None else np.full(n, 90.0)
+                hold = tilt if azimuth else np.full(n, 90.0)
                 c = np.array(resolve_c_angles(raw, hold, waypoints, lo if np.isfinite(lo) else -BIG, hi if np.isfinite(hi) else BIG))
                 out[j.axis] = np.clip(c, lo, hi)
         return out
@@ -171,7 +179,7 @@ class GenericChainSolver(BaseKinematicSolver):
                 v = (lin[a][k] if a in lin else np.degrees(rot_rad[a][k]) if a in rot_rad else 0.0)
                 return float(v * sign.get(a, 1.0)) + 0.0
             states.append(MachineStateVector(
-                x=mach("X"), y=mach("Y"), z=mach("Z"), b=mach("B"), c=mach("C"),
+                x=mach("X"), y=mach("Y"), z=mach("Z"), a=mach("A"), b=mach("B"), c=mach("C"),
                 tool_alignment=tool_alignment(wp, axis_part[k]),
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
                 feature_type=wp.feature_type, layer_index=wp.layer_index))
@@ -182,12 +190,13 @@ class GenericChainSolver(BaseKinematicSolver):
         ch = self._chain(config)
         if not ch.rotaries():
             return None
-        S = np.asarray(poses, float).reshape(-1, 5)
+        S = np.asarray(poses, float)
+        S = S.reshape(-1, S.shape[-1])
         n = len(S)
-        col = {"X": 0, "Y": 1, "Z": 2, "B": 3, "C": 4}
+        col = {"X": 0, "Y": 1, "Z": 2, "B": 3, "C": 4, "A": 5}      # a 5-column pose has no A (= 0)
         vals = {}
         for j in ch.joints:
-            v = S[:, col[j.axis]] * j.sign
+            v = (S[:, col[j.axis]] if col[j.axis] < S.shape[1] else np.zeros(n)) * j.sign
             vals[j.axis] = np.radians(v) if j.rotary else v
         Rt, tt = branch_transform(ch.tool, vals, n)
         Rb, tb = branch_transform(ch.table, vals, n)

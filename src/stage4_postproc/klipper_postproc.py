@@ -87,13 +87,22 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
                           keep_trailing_newline=True)
         template = env.get_template("klipper_5axis.gcode.j2")
         return template.render(moves=moves, profile=profile, cmd=profile.travel_command,
-                               layer_count=layer_count, park_z=park_z)
+                               layer_count=layer_count, park_z=park_z,
+                               rot_home=" ".join(f"{l}0" for l in profile.rotary_axes if l in "ABC"))
 
     def generate_gcode_layers(self, trajectory: MachineTrajectory, profile: MinimalPrintProfile) -> GcodeLayers:
         """The same G-code, split into header / per-layer blocks / footer."""
         return split_gcode_by_layer(self.generate_gcode(trajectory, profile))
 
     # ------------------------------------------------------------------------------------------
+    @staticmethod
+    def _rot_words(s: MachineStateVector, profile: MinimalPrintProfile) -> str:
+        """' B12.345 C-90.000' - the rotary words of a move (empty on a 3-axis machine); letters/order from profile.rotary_axes."""
+        if not profile.include_rotary_axes:
+            return ""
+        val = {"A": s.a, "B": s.b, "C": s.c}
+        return "".join(f" {l}{val[l]:.3f}" for l in profile.rotary_axes if l in val)
+
     def _plan_moves(self, states: List[MachineStateVector], profile: MinimalPrintProfile) -> List[Dict[str, Any]]:
         """Turns machine states into template-ready moves (all decisions are made here, not in Jinja)."""
         r = profile.filament_diameter / 2.0
@@ -111,7 +120,8 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
 
         for s in states:
             move: Dict[str, Any] = {
-                "x": s.x, "y": s.y, "z": s.z, "b": s.b, "c": s.c,
+                "x": s.x, "y": s.y, "z": s.z, "b": s.b, "c": s.c, "a": s.a,
+                "rot": self._rot_words(s, profile),
                 "feedrate": s.feedrate,
                 "layer_marker": s.layer_index if s.layer_index != last_layer else None,
                 "type_marker": None,

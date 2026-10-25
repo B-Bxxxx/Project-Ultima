@@ -9,10 +9,13 @@
 | `swivel_head_xyzbc` | tilting + rotating head | stable |
 | `generic_chain` | **any** XYZ + up to two rotary axes, described in the machine file | **new, parallel test** - the three solvers above are untouched |
 
-Rotary axis model of the system: **A about X, B about Y, C about Z**. Only B and C exist in the G-code today; A is
-reserved (the `axis` name is rejected with a clear message) and a third rotary joint (6 axis, "C only theoretical") is
-in progress. Who-carries-whom between B and C may be described in `generic_chain`; the hand-written solvers have it fixed
-(table: B carries C; head: C carries B).
+Rotary axis model of the system: **A about X, B about Y, C about Z** (fixed by the letter; `sign` flips the turning direction).
+`generic_chain` supports A, B, C (at most TWO of them: 5 axis, or one = 4 axis); the hand-written solvers only B and C.
+A third rotary joint (6 axis) is refused with an explicit message - in progress, not connected to Stage 4. Who-carries-whom
+is the list order in `generic_chain`; the hand-written solvers have it fixed (table: B carries C; head: C carries B).
+
+G-code: the letters written are the machine's rotary axes in the order A B C (`MinimalPrintProfile.rotary_axes`, set from the machine
+file); a classic B+C machine writes exactly the same G-code as before. `MachineStateVector.a` is 0 for machines without A.
 
 ## The `chain` object (kinematics `generic_chain`)
 
@@ -21,26 +24,29 @@ in progress. Who-carries-whom between B and C may be described in `generic_chain
 "axes": ["X", "Y", "Z", "B", "C"],
 "chain": {
   "tool":  [ {"axis": "X", "type": "linear", "direction": [1, 0, 0]}, ... ],      // machine base -> nozzle, OUTERMOST FIRST
-  "table": [ {"axis": "B", "type": "rotary", "direction": [0, 1, 0],
-              "point": ["pivot_offset_x", "pivot_offset_y", "pivot_offset_z"],
+  "table": [ {"axis": "B", "type": "rotary", "origin": ["pivot_offset_x", "pivot_offset_z"],
               "sign": "b_axis_dir", "min": "b_axis_min", "max": "b_axis_max"},
-             {"axis": "C", "type": "rotary", "direction": [0, 0, 1], "point": ["c_axis_x", "c_axis_y", "c_axis_z"],
-              "sign": "c_axis_dir", "min": "c_axis_min", "max": "c_axis_max", "continuous": true} ],   // base -> part
+             {"axis": "C", "type": "rotary", "origin": ["c_axis_x", "c_axis_y"],
+              "sign": "c_axis_dir", "min": "c_axis_min", "max": "c_axis_max"} ],   // base -> part
   "part_origin": ["c_axis_x + eccentricity_x", "c_axis_y + eccentricity_y", "c_axis_z"],   // part (0,0,0) in the zero pose
   "tip": [0, 0, 0],            // nozzle tip in the zero pose
   "tool_axis": [0, 0, 1]       // nozzle direction in the zero pose
 }
 ```
 
-* **Zero pose**: all joints at 0. `direction` (right-handed axis / translation direction) and `point` (a point on a rotation
-  axis) are given in the machine base frame in that pose - the axes are measured on the machine, not derived from formulas.
+* **Zero pose**: all joints at 0, everything in the machine base frame - the axes are measured on the machine.
+  A rotary axis' direction comes from its letter (a different `direction` is an error); its **origin** is TWO numbers, the
+  coordinates of the axis line (A: y z, B: x z, C: x y; the third one is irrelevant). `point` (3D) is still accepted.
+  Linear joints have a free `direction`.
 * **Who carries whom** = list order, outermost first. A linear axis in `table` is a moving bed (Y carrying B and C); in
   `tool` it moves the nozzle. `"sign": -1` flips the direction of the machine value relative to the mathematical one.
-* `min`/`max` are limits of the **machine value**; `continuous` marks an axis that may wind around freely (C): inside
-  a move chain it stays continuous, at every travel move it is re-chosen closest to 0 (same rule as the other solvers).
+* `min`/`max` are limits of the **machine value**. `continuous` (may wind around freely) follows from the range unless given:
+  range >= 360 deg or no limits = can turn around (inside a move chain the angle stays continuous, at every travel move it is
+  re-chosen closest to 0); a smaller range cannot, the angle is fitted into it and clamped with a warning if the normal needs more.
+  The "keep the previous azimuth at zero tilt" rule applies only to a continuous axis that turns about the nozzle axis (C).
 * Numbers may be expressions of the machine file's `parameters` (`+ - * /`, numbers, parameter names - nothing else).
   The parameters can have any name; they show up as input fields in the GUI as before.
-* Rules: exactly one X, Y, Z linear joint (independent directions), at most two rotary joints (not parallel), every axis once,
+* Rules: exactly one X, Y, Z linear joint (independent directions), at most two rotary joints, every axis once,
   `axes` must list exactly the chain's axes.
 
 ## Maths (per waypoint, `chain_solver.py`)
@@ -61,5 +67,13 @@ program convention); the chain solver takes the other branch if it lies inside t
 
 ## Not done (in progress)
 
-A axis in the G-code / `MachineStateVector`; third rotary joint (6 axis); a GUI editor for the chain (edit the JSON); ranking
+Third rotary joint (6 axis); a GUI editor for the chain (edit the JSON); ranking
 branches by travel distance instead of "positive limited joint"; firmware-side issues are in PITFALLS.md.
+
+## 4 axis and unreachable normals
+
+With one rotary joint (or limits that stop the nozzle short of the normal) the nozzle is not along the layer normal. Stage 3
+reports the cosine in `tool_alignment`; with `thickness_model = nozzle_axis` Stage 4 divides the extruded volume by it
+(floor `MIN_TOOL_ALIGNMENT`), so the deposited cross-section stays right. With the other thickness model the volume is NOT corrected.
+Some structures are weak by design: a vertical-axis joint outside a tilt joint (C carrying A) cannot tilt the nozzle at all
+(only normals with N_x = 0 are reachable).
