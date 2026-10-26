@@ -30,7 +30,7 @@ def _poses(result: MachineTrajectory, columns: int = 5) -> np.ndarray:
     return np.array(cols, float).reshape(-1, columns)
 
 
-def _bad_segments(solver, config, wps: List[CLDataWaypoint], S: np.ndarray, tol: float):
+def _bad_segments(solver, config, wps: List[CLDataWaypoint], S: np.ndarray, tol: float, min_len: float = MIN_SEGMENT):
     """Boolean array: bad[i] = the extruding segment (i-1 -> i) deviates more than `tol`."""
     n = len(wps)
     P = np.array([[w.x, w.y, w.z] for w in wps], float)
@@ -44,7 +44,81 @@ def _bad_segments(solver, config, wps: List[CLDataWaypoint], S: np.ndarray, tol:
         dep = solver.to_part_batch(config, pose)
         ref = P[:-1] * (1.0 - t) + P[1:] * t
         dev[1:] = np.maximum(dev[1:], np.linalg.norm(dep - ref, axis=1))
-    return extruding & (length > MIN_SEGMENT) & (dev > tol), dev
+    return extruding & (length > min_len) & (dev > tol), dev
+
+
+UNWIND_STEP = 5.0             # deg: a segment that cannot be split away is turned into steps of at most this much rotation
+UNWIND_MAX_STEPS = 90
+
+
+def machine_from_part(solver, config, P: np.ndarray, rot: np.ndarray) -> np.ndarray:
+    """
+    Machine X Y Z that put the nozzle tip on the part points P (k,3) for the given rotary values rot (k, cols-3) (machine values,
+    pose order of the solver). The solver inverse is affine in the machine position: P = t + Q^T M, so M = Q (P - t).
+    """
+    k = len(P)
+    base = np.zeros((k, 3 + rot.shape[1]))
+    base[:, 3:] = rot
+    t = np.asarray(solver.to_part_batch(config, base), float)
+    q = []
+    for ax in range(3):
+        e = base.copy()
+        e[:, ax] = 1.0
+        q.append(np.asarray(solver.to_part_batch(config, e), float) - t)
+    d = P - t
+    return np.column_stack([np.einsum("ni,ni->n", q[ax], d) for ax in range(3)])
+
+
+def _unwind(solver, config, result: MachineTrajectory, wps, cols: int, tol: float) -> MachineTrajectory:
+    """
+    Extruding segments whose endpoints need a large rotation (C turning by up to 180 deg at B ~ 0, a normal that circles the
+    vertical) deviate from their line however finely they are split: the turn happens between two neighbouring points. Here
+    such a segment is replaced by steps: B / C (A) change gradually while the nozzle tip is kept ON the straight part line, so
+    the firmware draws the line, just slowly. The extrusion is shared equally between the steps.
+    """
+    S = _poses(result, cols)
+    if len(S) != len(wps) or len(S) < 2:
+        return result
+    bad, _ = _bad_segments(solver, config, wps, S, tol, min_len=-1.0)         # also the tiny segments splitting ended in
+    if not bad.any():
+        return result
+    idx = np.nonzero(bad)[0]
+    rot0, rot1 = S[idx - 1, 3:], S[idx, 3:]
+    m = np.clip(np.ceil(np.abs(rot1 - rot0).max(axis=1) / UNWIND_STEP), 2, UNWIND_MAX_STEPS).astype(int)
+    P0 = np.asarray(solver.to_part_batch(config, S[idx - 1]), float)
+    P1 = np.asarray(solver.to_part_batch(config, S[idx]), float)
+    rows_P, rows_R, owner, frac = [], [], [], []
+    for n_, (i, mi) in enumerate(zip(idx, m)):
+        for j in range(1, mi):
+            u = j / mi
+            rows_P.append(P0[n_] + (P1[n_] - P0[n_]) * u)
+            rows_R.append(rot0[n_] + (rot1[n_] - rot0[n_]) * u)
+            owner.append(int(i))
+            frac.append(u)
+    XYZ = machine_from_part(solver, config, np.array(rows_P), np.array(rows_R))
+    by_owner: dict = {}
+    for r, i in enumerate(owner):
+        by_owner.setdefault(i, []).append(r)
+    steps = {int(i): int(mi) for i, mi in zip(idx, m)}
+    states = result.states
+    new = []
+    for i, st in enumerate(states):
+        if i in by_owner:
+            mi = steps[i]
+            vol = st.extrusion_volume / mi
+            prev = states[i - 1]
+            for r in by_owner[i]:
+                u = frac[r]
+                upd = dict(x=float(XYZ[r, 0]), y=float(XYZ[r, 1]), z=float(XYZ[r, 2]), b=float(rows_R[r][0]), c=float(rows_R[r][1]),
+                           extrusion_volume=vol, tool_alignment=prev.tool_alignment + (st.tool_alignment - prev.tool_alignment) * u)
+                if cols > 5:
+                    upd["a"] = float(rows_R[r][2])
+                new.append(st.model_copy(update=upd))
+            new.append(st.model_copy(update=dict(extrusion_volume=vol)))
+        else:
+            new.append(st)
+    logger.info("Unwound %d segments into %d steps (rotation > %g deg spread along the line)", len(idx), len(new) - len(states), UNWIND_STEP)
+    return MachineTrajectory(states=new)
 
 
 def _midpoint(a: CLDataWaypoint, b: CLDataWaypoint) -> CLDataWaypoint:
@@ -93,6 +167,7 @@ def solve_refined(solver: BaseKinematicSolver, trajectory: CLDataTrajectory, con
         if bad.any():
             logger.warning("Joint tolerance: %d segments still deviate up to %.3f mm after %d splits",
                            int(bad.sum()), float(dev[bad].max()), MAX_ITERATIONS)
+    result = _unwind(solver, config, result, wps, cols, tol)
     if len(wps) != original:
         logger.info("Joint tolerance %.3f mm: %d -> %d points", tol, original, len(wps))
     return result

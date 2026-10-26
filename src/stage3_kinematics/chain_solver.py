@@ -15,7 +15,7 @@ import logging
 import numpy as np
 
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver, resolve_c_angles, tool_alignment
+from src.stage3_kinematics.base import BaseKinematicSolver, resolve_branches, resolve_c_angles, tool_alignment
 from src.stage3_kinematics.chain import Chain, LINEAR_NAMES, angle_about, branch_transform, two_planes
 from src.stage3_kinematics.registry import KinematicsRegistry
 
@@ -78,6 +78,8 @@ class GenericChainSolver(BaseKinematicSolver):
         sols = two_planes(j1.direction, j2.direction, N @ j1.direction, np.full(n, j2.direction @ e))   # R1 R2 e = N : v = R2 e = R1^-1 N
         return [{j2.axis: angle_about(j2.direction, E, v), j1.axis: angle_about(j1.direction, v, N)} for v in sols]
 
+    dead_zone_deg = 0.0
+
     def _angles(self, ch: Chain, N: np.ndarray, waypoints):
         """Final MATHEMATICAL rotary angles (deg), {axis: (n,)}: branch choice, continuity, limits."""
         rot = ch.rotaries()
@@ -112,6 +114,23 @@ class GenericChainSolver(BaseKinematicSolver):
             tilt = np.abs(_wrap(ang[free[0].axis]))
         e_dir = ch.tool_axis
         out = {}
+        az = [j for j in rot if j.continuous and abs(abs(float(j.direction @ e_dir)) - 1.0) < 1e-9]
+        if len(rot) == 2 and len(free) == 1 and len(az) == 1:
+            # tilt joint + azimuth joint (trunnion / swivel head): branch by continuity of the azimuth, vertical dead zone
+            jt, jc = free[0], az[0]
+            (tlo, thi), (clo, chi) = lim[jt.axis], lim[jc.axis]
+            t, c = _wrap(ang[jt.axis]), ang[jc.axis]
+            tpos, ccan = np.abs(t), np.where(t < 0, c + 180.0, c)         # canonical form: tilt >= 0
+            raw = np.radians(ccan)
+            sing = np.radians(tpos) < SINGULAR_TILT_RAD
+            if sing.any():
+                last = np.maximum.accumulate(np.where(~sing, np.arange(n), -1))
+                raw = np.where(last >= 0, raw[np.maximum(last, 0)], 0.0)
+            tb, cb = resolve_branches(raw, tpos, waypoints, tlo, thi, clo if np.isfinite(clo) else -BIG,
+                                      chi if np.isfinite(chi) else BIG, self.dead_zone_deg)
+            out[jt.axis] = np.clip(np.array(tb), tlo, thi)
+            out[jc.axis] = np.clip(np.array(cb), clo, chi)
+            return out
         for j in rot:
             lo, hi = lim[j.axis]
             if not j.continuous:
@@ -163,6 +182,7 @@ class GenericChainSolver(BaseKinematicSolver):
         N = np.where((nn < 1e-6)[:, None], np.array([0.0, 0.0, 1.0]), N / np.maximum(nn, 1e-12)[:, None])
         P = np.array([[w.x, w.y, w.z] for w in wps], float)
 
+        self.dead_zone_deg = float(config.vertical_dead_zone_deg)
         ang_deg = self._angles(ch, N, wps)
         rot_rad = {a: np.radians(v) for a, v in ang_deg.items()}
         lin = self._linear_solve(ch, rot_rad, P)

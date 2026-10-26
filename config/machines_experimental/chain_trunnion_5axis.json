@@ -103,6 +103,14 @@
       "label": "C eccentricity Y",
       "unit": "mm",
       "default": 0.0
+    },
+    "vertical_dead_zone_deg": {
+      "label": "Vertical dead zone",
+      "unit": "deg",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 10.0,
+      "step": 0.5
     }
   },
   "chain": {

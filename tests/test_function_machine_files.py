@@ -287,7 +287,7 @@ def test_tool_alignment_of_the_three_solvers():
     assert s3.tool_alignment == pytest.approx(math.cos(math.radians(30)))     # vertical nozzle on a tilted layer
     s5 = KinematicsRegistry.get_solver("trunnion_table_xyzbc")().solve(_traj(*n), cfg5).states[0]
     assert s5.tool_alignment == pytest.approx(1.0, abs=1e-6)                  # nozzle follows the normal
-    limited = cfg5.model_copy(update={"b_axis_max": 10.0})
+    limited = cfg5.model_copy(update={"b_axis_min": 0.0, "b_axis_max": 10.0})     # one-sided: the flipped form (-B) is not available
     s5l = KinematicsRegistry.get_solver("trunnion_table_xyzbc")().solve(_traj(*n), limited).states[0]
     assert s5l.b == pytest.approx(10.0)
     assert s5l.tool_alignment == pytest.approx(math.cos(math.radians(20)), abs=1e-6)   # 30 wanted, 10 reached

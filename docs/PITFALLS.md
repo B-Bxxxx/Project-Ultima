@@ -104,11 +104,18 @@ Problems and traps met while building the pipeline - raw material for the docume
 Three hand-written solvers are the supported ones; `generic_chain` (machine file `chain`, see `docs/KINEMATICS.md`) is a parallel
 test implementation that must keep giving the same poses (tests/test_generic_chain.py). Rotary model A(X) B(Y) C(Z): only B and C
 reach the G-code today, A and a third rotary joint (6 axis) are in progress. In the hand-written solvers who carries whom is fixed
-(table: B carries C, head: C carries B). With one-sided B limits and `b_axis_dir = -1` the old solvers clamp B to 0 (they always compute B >= 0 in the
-program convention); `generic_chain` picks the branch inside the limits.
+(table: B carries C, head: C carries B). 
 
-## C flips 0 <-> 180 across a crest (found with the G-code checker on rounded_ridge, 5P-9.gcode)
-Where the layer normal crosses the vertical (the crest of a ridge) B passes through ~0 and the tilt direction flips; the solvers keep B >= 0 and
-turn C by 180 deg instead. The firmware turns C linearly inside the extruding move, and the nozzle (some mm from the C axis) draws a half circle on
-the part. `solve_refined` cannot split it away: the flip happens between two neighbouring points whatever their distance. The fix belongs in the
-branch choice (B signed through zero, C kept) - see the checker's `deviation` / "C turn" figures to measure it.
+## C flips 0 <-> 180 across a crest (found with the G-code checker on rounded_ridge, 5P-9.gcode) - FIXED
+Where the layer normal crosses the vertical (the crest of a ridge) B passes through ~0 and the tilt direction reverses. The solvers used to keep
+B >= 0 and turn C by 180 deg; the firmware turns C linearly inside the extruding move and the nozzle (some mm from the C axis) drew a half circle
+on the part (up to 15 mm off). `solve_refined` could not split it away: the flip is between two neighbouring points.
+Now (`base.resolve_branches`, same in `generic_chain`):
+* **Signed B**: the same nozzle direction is (B, C) and (-B, C + 180). Inside a move chain the form whose C is nearest to the previous C is used,
+  if -B is inside the B limits (needs a B range on both sides). B passes through zero, C stays. A one-sided B range keeps the old flip.
+* **Vertical dead zone** (machine parameter `vertical_dead_zone_deg`, shipped 2 deg, MachineConfig default 0): a normal closer than that to the vertical
+  gives B = 0 and C held; `tool_alignment` (cos of the real deviation) corrects the extrusion in Stage 4.
+* **Gradual C** (`refine._unwind`): a segment that still deviates after splitting (flip unavoidable) is replaced by steps of <= 5 deg of rotation while the
+  tip is kept on the straight part line; the extrusion is shared between the steps. Slow (the firmware time is the 6D length / F) but the line is straight.
+Measured on the real rounded_ridge pipeline: C turns > 90 deg 936 -> 0, max deviation 15.0 -> 0.02 mm, firmware time 145 -> 30 min.
+A side effect: with `b_axis_dir = -1` and one-sided limits the old solvers no longer clamp B to 0 (they take the other form).
