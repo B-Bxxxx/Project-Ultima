@@ -28,6 +28,7 @@ class CheckTab(QWidget):
         self.rc: Optional[Reconstruction] = None
         self.title = ""
         self._items = []
+        self._base = None                    # (key, item): the complete layers below the playing layer, rebuilt only when the key changes
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
@@ -55,7 +56,7 @@ class CheckTab(QWidget):
         self.layer.setSpecialValueText("all layers")
         self.layer.setRange(-1, 0)
         self.layer.setValue(-1)
-        self.layer.valueChanged.connect(self.redraw)
+        self.layer.valueChanged.connect(self._layer_changed)
         for w in (self.btn_check, self.btn_open, self.cmb_frame, self.chk_travel, self.chk_bad, QLabel("tol."), self.tol,
                   QLabel("layer"), self.layer):
             top.addWidget(w)
@@ -120,12 +121,26 @@ class CheckTab(QWidget):
         self.layer.blockSignals(False)
         self._items_frame = None
         self._rebuild_points()
-        self.slider.blockSignals(True)
-        self.slider.setRange(0, len(self._layer_arr))
-        self.slider.setValue(len(self._layer_arr))
-        self.slider.blockSignals(False)
+        self._play_range()
         self._summary()
         self.frame_view()
+        self.redraw()
+
+    def _play_range(self):
+        """The slider (and Play) runs through the samples of ONE layer: the chosen one, else the last; layers below are complete."""
+        la = self._layer_arr
+        target = self.layer.value() if self.layer.value() >= 0 else int(la.max())
+        idx = np.nonzero(la == target)[0]
+        idx = idx[idx >= 1]
+        self._play = (int(idx[0]), int(idx[-1]) + 1) if len(idx) else (1, 1)
+        self.slider.blockSignals(True)
+        self.slider.setRange(0, self._play[1] - self._play[0])
+        self.slider.setValue(self._play[1] - self._play[0])
+        self.slider.blockSignals(False)
+
+    def _layer_changed(self, *_):
+        if self.rc is not None:
+            self._play_range()
         self.redraw()
 
     def _tolerance_changed(self, *_):
@@ -159,6 +174,12 @@ class CheckTab(QWidget):
         self.txt.setPlainText("\n".join(lines))
 
     # ------------------------------------------------------------------ drawing
+    def _clear_base(self):
+        if self._base is not None:
+            for it in self._base[1]:
+                self.view.removeItem(it)
+        self._base = None
+
     def frame_view(self):
         if self.rc is None:
             return
@@ -178,31 +199,46 @@ class CheckTab(QWidget):
         rc = self.rc
         P = rc.part if self.cmb_frame.currentIndex() == 0 else rc.machine
         m = len(P)
-        stop = min(self.slider.value(), m)
+        p0, p1 = self._play
+        stop = min(p0 + self.slider.value(), m)
         layer = self.layer.value()
-        idx = np.arange(1, stop)
-        ok = np.ones(len(idx), bool)
-        if layer >= 0:
-            ok &= self._layer_arr[idx] == layer
-        trav = self._feat_arr[idx] == "travel"
-        if not self.chk_travel.isChecked():
-            ok &= ~trav
-        bad = self._bad_arr[idx] & self.chk_bad.isChecked()
 
-        def add(sel, color):
-            if sel.any():
-                ii = idx[sel]
-                pts = np.empty((len(ii) * 2, 3), np.float32)
-                pts[0::2], pts[1::2] = P[ii - 1], P[ii]
-                it = gl.GLLinePlotItem(pos=pts, color=color, mode="lines")
-                self.view.addItem(it)
-                self._items.append(it)
+        def add(idx, sel, color):
+            ii = idx[sel]
+            if not len(ii):
+                return None
+            pts = np.empty((len(ii) * 2, 3), np.float32)
+            pts[0::2], pts[1::2] = P[ii - 1], P[ii]
+            it = gl.GLLinePlotItem(pos=pts, color=color, mode="lines")
+            self.view.addItem(it)
+            return it
 
-        for st in FEATURE_STYLES:
-            add(ok & ~bad & (self._feat_arr[idx] == st.key), st.color)
-        known = {s.key for s in FEATURE_STYLES}
-        add(ok & ~bad & ~np.isin(self._feat_arr[idx], list(known)), (0.8, 0.8, 0.8, 1.0))
-        add(ok & bad, BAD_COLOR)
+        def draw(idx):
+            """Items of the samples `idx` (feature colours, deviating moves red); returns the created items."""
+            if not len(idx):
+                return []
+            ok = np.ones(len(idx), bool)
+            if layer >= 0:
+                ok &= self._layer_arr[idx] == layer
+            trav = self._feat_arr[idx] == "travel"
+            if not self.chk_travel.isChecked():
+                ok &= ~trav
+            bad = self._bad_arr[idx] & self.chk_bad.isChecked()
+            out = []
+            for st in FEATURE_STYLES:
+                out.append(add(idx, ok & ~bad & (self._feat_arr[idx] == st.key), st.color))
+            known = {s.key for s in FEATURE_STYLES}
+            out.append(add(idx, ok & ~bad & ~np.isin(self._feat_arr[idx], list(known)), (0.8, 0.8, 0.8, 1.0)))
+            out.append(add(idx, ok & bad, BAD_COLOR))
+            return [o for o in out if o is not None]
+
+        # complete layers below the playing layer: cached, rebuilt only when the view settings change
+        key = (id(rc), self.cmb_frame.currentIndex(), self.chk_travel.isChecked(), self.chk_bad.isChecked(),
+               self.tol.value(), layer, p0)
+        if self._base is None or self._base[0] != key:
+            self._clear_base()
+            self._base = (key, draw(np.arange(1, p0)))
+        self._items = draw(np.arange(p0, stop))
         if stop > 0:
             head = gl.GLScatterPlotItem(pos=P[stop - 1:stop].astype(np.float32), size=10, color=(1, 1, 1, 1))
             self.view.addItem(head)

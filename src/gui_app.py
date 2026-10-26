@@ -646,7 +646,7 @@ class MainWindow(QMainWindow):
         self.speed_combo.currentIndexChanged.connect(self.on_speed_changed)
         rl.addWidget(self.btn_play)
         rl.addWidget(self.speed_combo)
-        f.addRow("Playback:", row)
+        f.addRow("Playback (last layer):", row)
         f.addRow(self.play_slider)
 
     # ------------------------------------------------------------------ project (settings) file
@@ -1309,9 +1309,11 @@ class MainWindow(QMainWindow):
         n = self._layer_total()
         self.lbl_layers.setText(f"Layers {lo + 1}..{hi + 1} of {n}" if n else "Layers: -")
         self._ranges = {k: move_range(items, lo, hi) for k, items in self._stage_items().items()}
+        # playback only runs through the LAST visible layer; the layers below it are always drawn complete
+        self._last_layer = {k: move_range(items, hi, hi) for k, items in self._stage_items().items()}
         total = 0
-        if "stage2" in self._ranges:
-            a, b = self._ranges["stage2"]
+        if "stage2" in self._last_layer:
+            a, b = self._last_layer["stage2"]
             total = b - a
         if reset_playback:
             self._stop_timer()
@@ -1537,7 +1539,7 @@ class MainWindow(QMainWindow):
                 items = self._stage_items().get(key)
                 if items is None:
                     continue
-                start, stop = self._ranges.get(key, (0, 0))
+                start, stop = getattr(self, "_last_layer", {}).get(key, (0, 0))
                 shown = min(self.playback.shown, stop - start)
                 groups = group_lines_by_feature(items, vis, hi + 1, layer_min=lo, move_limit=start + shown)
                 for st in FEATURE_STYLES:
