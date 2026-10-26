@@ -225,3 +225,20 @@ def test_end_block_uses_the_lift_and_thickness_model_follows_the_machine(win):
     win.thickness_combo.setCurrentText("stage1")
     win.run_pipeline()
     assert win.profile.thickness_model == "stage1"
+
+
+def test_playback_runs_through_the_last_layer_only(win):
+    """The G-code check slider covers one layer (the last, or the chosen one); the layers below stay complete."""
+    gcode = "\n".join(
+        [f";LAYER:{L}\n; TYPE: outer_wall\n" + "\n".join(f"G1 X{10 + k} Y{L} Z{L * 0.2 + 0.2} E0.1 F1500" for k in range(5)) for L in range(3)])
+    tab = win.check_tab
+    tab.load_text(gcode, "t")
+    n = len(tab._layer_arr)
+    lo, hi = tab._play
+    assert hi == n and hi - lo == tab.slider.maximum() and tab.slider.maximum() < n // 2
+    assert set(tab._layer_arr[lo:hi]) == {2}
+    base_key = tab._base[0]
+    tab.slider.setValue(2)
+    assert tab._base[0] == base_key                      # moving the slider does not rebuild the completed layers
+    tab.layer.setValue(1)
+    assert tab.slider.maximum() == int((tab._layer_arr == 1).sum())
