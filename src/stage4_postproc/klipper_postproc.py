@@ -88,7 +88,7 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
         template = env.get_template("klipper_5axis.gcode.j2")
         return template.render(moves=moves, profile=profile, cmd=profile.travel_command,
                                layer_count=layer_count, park_z=park_z,
-                               rot_home=" ".join(f"{l}0" for l in profile.rotary_axes if l in "ABC"))
+                               rot_home=" ".join(f"{l}{profile.rotary_home.get(l, 0.0):g}" for l in profile.rotary_axes if l in "ABC"))
 
     def generate_gcode_layers(self, trajectory: MachineTrajectory, profile: MinimalPrintProfile) -> GcodeLayers:
         """The same G-code, split into header / per-layer blocks / footer."""

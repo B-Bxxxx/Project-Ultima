@@ -1425,6 +1425,7 @@ class MainWindow(QMainWindow):
                 # only the axes the machine really has appear in the G-code
                 include_rotary_axes=mspec.has_rotary_axes,
                 rotary_axes=mspec.rotary_letters or "BC",
+                rotary_home=mspec.rotary_home(machine_cfg),
                 park_lift=self.park_spin.value(),
                 infill_overlap=self.overlap_spin.value(),
                 path_tolerance=self.path_tol_spin.value(),

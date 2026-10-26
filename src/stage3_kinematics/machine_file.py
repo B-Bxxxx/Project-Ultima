@@ -37,7 +37,7 @@ VERSION = 1
 PLANAR = "planar_3axis_xyz"
 GENERIC = "generic_chain"
 VALID_AXES = ("X", "Y", "Z", "A", "B", "C")
-CONFIG_FIELDS = ("joint_tolerance", "vertical_dead_zone_deg", "b_axis_dir", "c_axis_dir", "c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
+CONFIG_FIELDS = ("joint_tolerance", "vertical_dead_zone_deg", "b_axis_dir", "b_axis_offset_deg", "c_axis_dir", "c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
                  "b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max", "max_3axis_tilt_deg")
 ROTARY_REQUIRED = ("b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max")
 
@@ -60,6 +60,13 @@ class MachineSpec:
     @property
     def has_rotary_axes(self) -> bool:
         return any(a in self.axes for a in "ABC")
+
+    def rotary_home(self, config) -> dict:
+        """Machine value of every rotary axis at the level/neutral pose (written by the end block): B offset, chain joint offsets."""
+        if config.chain:
+            ch = Chain.parse(config.chain, {}, "")
+            return {j.axis: j.offset for j in ch.joints if j.rotary and j.offset}
+        return {"B": config.b_axis_offset_deg} if config.b_axis_offset_deg else {}
 
     @property
     def rotary_letters(self) -> str:
@@ -217,6 +224,8 @@ class MachineSpec:
                 kw[f"{a}_axis_min"] = j.lo if np.isfinite(j.lo) else -1e6
                 kw[f"{a}_axis_max"] = j.hi if np.isfinite(j.hi) else 1e6
                 kw[f"{a}_axis_dir"] = j.sign
+                if a == "b":
+                    kw["b_axis_offset_deg"] = j.offset
         for n in ROTARY_REQUIRED:
             kw.setdefault(n, 0.0)
         return MachineConfig(kinematic_chain=self.kinematics, chain=ch.to_dict(), **kw)

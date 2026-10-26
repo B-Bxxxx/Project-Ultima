@@ -193,11 +193,12 @@ class GenericChainSolver(BaseKinematicSolver):
         axis_part = np.einsum("nji,nj->ni", Rb, np.einsum("nij,j->ni", Rt, ch.tool_axis))
 
         sign = {j.axis: j.sign for j in ch.joints}
+        offs = {j.axis: j.offset for j in ch.joints if j.rotary}
         states = []
         for k, wp in enumerate(wps):
             def mach(a):
                 v = (lin[a][k] if a in lin else np.degrees(rot_rad[a][k]) if a in rot_rad else 0.0)
-                return float(v * sign.get(a, 1.0)) + 0.0
+                return float(v * sign.get(a, 1.0) + offs.get(a, 0.0)) + 0.0
             states.append(MachineStateVector(
                 x=mach("X"), y=mach("Y"), z=mach("Z"), a=mach("A"), b=mach("B"), c=mach("C"),
                 tool_alignment=tool_alignment(wp, axis_part[k]),
@@ -216,7 +217,7 @@ class GenericChainSolver(BaseKinematicSolver):
         col = {"X": 0, "Y": 1, "Z": 2, "B": 3, "C": 4, "A": 5}      # a 5-column pose has no A (= 0)
         vals = {}
         for j in ch.joints:
-            v = (S[:, col[j.axis]] if col[j.axis] < S.shape[1] else np.zeros(n)) * j.sign
+            v = ((S[:, col[j.axis]] if col[j.axis] < S.shape[1] else np.zeros(n)) - (j.offset if j.rotary else 0.0)) * j.sign
             vals[j.axis] = np.radians(v) if j.rotary else v
         Rt, tt = branch_transform(ch.tool, vals, n)
         Rb, tb = branch_transform(ch.table, vals, n)

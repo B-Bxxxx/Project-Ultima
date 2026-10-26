@@ -19,7 +19,8 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
         px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
         ex, ey = config.eccentricity_x, config.eccentricity_y
         c_axis = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])      # machine position of the C axis (B = 0)
-        b_min, b_max = config.b_axis_min, config.b_axis_max
+        b_off = config.b_axis_offset_deg                           # machine B of the level table
+        b_min, b_max = config.b_axis_min - b_off, config.b_axis_max - b_off
         b_sign = -1.0 if config.b_axis_dir < 0 else 1.0           # direction of the machine's B / C relative to the program's
         c_sign = -1.0 if config.c_axis_dir < 0 else 1.0
         c_min, c_max = config.c_axis_min, config.c_axis_max
@@ -140,7 +141,7 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
                 x=float(P_mach[0]),
                 y=float(P_mach[1]),
                 z=float(P_mach[2]),
-                b=float(b_deg * b_sign) + 0.0,
+                b=float(b_deg * b_sign + b_off) + 0.0,
                 c=float(c_deg * c_sign) + 0.0,
                 tool_alignment=tool_alignment(wp, (-np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume,
@@ -156,7 +157,7 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
     def to_part_batch(self, config: MachineConfig, poses):
         """Inverse of solve(): P = R_C^T (R_B^T (M - pivot) + pivot - c_axis) - eccentricity."""
         S = np.asarray(poses, float).reshape(-1, 5)
-        b = np.radians(S[:, 3] * (-1.0 if config.b_axis_dir < 0 else 1.0))
+        b = np.radians((S[:, 3] - config.b_axis_offset_deg) * (-1.0 if config.b_axis_dir < 0 else 1.0))
         c = np.radians(S[:, 4] * (-1.0 if config.c_axis_dir < 0 else 1.0))
         pv = np.array([config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z])
         ca = np.array([config.c_axis_x, config.c_axis_y, config.c_axis_z])

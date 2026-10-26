@@ -98,3 +98,10 @@ reports the cosine in `tool_alignment`; with `thickness_model = nozzle_axis` Sta
 (floor `MIN_TOOL_ALIGNMENT`), so the deposited cross-section stays right. With the other thickness model the volume is NOT corrected.
 Some structures are weak by design: a vertical-axis joint outside a tilt joint (C carrying A) cannot tilt the nozzle at all
 (only normals with N_x = 0 are reachable).
+
+## B offset (end-stop based zero)
+`b_axis_offset_deg` (classic solvers and the chain joint field `offset`): machine B = `b_axis_dir` * program B + offset. The program always
+works with the level table at B = 0; the G-code carries the machine value. `b_axis_min` / `b_axis_max` are machine values, so a B homed at its
+-90 deg end stop is described by offset 90, limits 0..180 (no manual zeroing; negative program B, needed at ridge crests, stays reachable).
+The end block moves the rotary axes to their level value (`B90` ...), the G-code checker inverts the offset. Offset 0 = unchanged output.
+Set `position_min: 0`, `position_max: 180` for B in `printer.cfg`.

@@ -14,7 +14,8 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
 
         px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
         ex, ey = config.eccentricity_x, config.eccentricity_y
-        b_min, b_max = config.b_axis_min, config.b_axis_max
+        b_off = config.b_axis_offset_deg                           # machine B of the level table
+        b_min, b_max = config.b_axis_min - b_off, config.b_axis_max - b_off
         b_sign = -1.0 if config.b_axis_dir < 0 else 1.0           # direction of the machine's B / C relative to the program's
         c_sign = -1.0 if config.c_axis_dir < 0 else 1.0
         c_min, c_max = config.c_axis_min, config.c_axis_max
@@ -95,7 +96,7 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
 
             state = MachineStateVector(
                 x=float(P_mach[0]), y=float(P_mach[1]), z=float(P_mach[2]),
-                b=float(b_deg * b_sign) + 0.0, c=float(c_deg * c_sign) + 0.0,
+                b=float(b_deg * b_sign + b_off) + 0.0, c=float(c_deg * c_sign) + 0.0,
                 tool_alignment=tool_alignment(wp, (np.sin(b_rad) * np.cos(c_rad), np.sin(b_rad) * np.sin(c_rad), np.cos(b_rad))),
                 extrusion_volume=wp.extrusion_volume, feedrate=wp.feedrate, is_travel_move=wp.is_travel_move,
                 feature_type=wp.feature_type,
@@ -108,7 +109,7 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
     def to_part_batch(self, config: MachineConfig, poses):
         """Inverse of solve(): P = M - (pivot - R_C R_B pivot) - c_axis."""
         S = np.asarray(poses, float).reshape(-1, 5)
-        b = np.radians(S[:, 3] * (-1.0 if config.b_axis_dir < 0 else 1.0))
+        b = np.radians((S[:, 3] - config.b_axis_offset_deg) * (-1.0 if config.b_axis_dir < 0 else 1.0))
         c = np.radians(S[:, 4] * (-1.0 if config.c_axis_dir < 0 else 1.0))
         px, py, pz = config.pivot_offset_x, config.pivot_offset_y, config.pivot_offset_z
         cb, sb, cc, sc = np.cos(b), np.sin(b), np.cos(c), np.sin(c)

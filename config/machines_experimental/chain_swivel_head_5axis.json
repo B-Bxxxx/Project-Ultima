@@ -43,6 +43,13 @@
       "max": 1.0,
       "step": 2.0
     },
+    "b_axis_offset_deg": {
+      "label": "B offset (level table)",
+      "unit": "deg",
+      "default": 0.0,
+      "min": -360.0,
+      "max": 360.0
+    },
     "c_axis_dir": {
       "label": "C direction (+1 / -1)",
       "unit": "",
@@ -147,6 +154,7 @@
         "axis": "B",
         "type": "rotary",
         "sign": "b_axis_dir",
+        "offset": "b_axis_offset_deg",
         "min": "b_axis_min",
         "max": "b_axis_max",
         "origin": [

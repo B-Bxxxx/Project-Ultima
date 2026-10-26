@@ -110,15 +110,17 @@ class Joint:
     direction: np.ndarray              # unit vector, zero pose
     point: np.ndarray                  # a point on the rotation axis (rotary only)
     sign: float = 1.0
+    offset: float = 0.0                # machine value of the mathematical zero (rotary): machine = sign * math + offset
     lo: float = -np.inf                # limits of the MACHINE value (deg for rotary)
     hi: float = np.inf
     continuous: bool = False                # derived from the range when the file does not say
 
     def math_limits(self):
-        """Limits of the mathematical angle (deg): machine value = sign * math value."""
+        """Limits of the mathematical angle (deg): machine value = sign * math value + offset."""
+        lo, hi = self.lo - self.offset, self.hi - self.offset
         if self.sign < 0:
-            return -self.hi, -self.lo
-        return self.lo, self.hi
+            return -hi, -lo
+        return lo, hi
 
 
 @dataclass
@@ -219,7 +221,7 @@ class Chain:
             if "min" in raw or "max" in raw or not isinstance(lim, (list, tuple)) or len(lim) != 2:
                 raise ChainError(f'{where}"limits" must be [min, max] and replaces "min"/"max"')
             raw["min"], raw["max"] = lim
-        extra = set(raw) - {"axis", "type", "direction", "point", "origin", "sign", "min", "max", "continuous"}
+        extra = set(raw) - {"axis", "type", "direction", "point", "origin", "sign", "offset", "min", "max", "continuous"}
         if extra:
             raise ChainError(f"{where}unknown joint field(s) {sorted(extra)}")
         axis = raw.get("axis")
@@ -256,7 +258,11 @@ class Chain:
             point = np.zeros(3)
             if "origin" in raw or "point" in raw:
                 raise ChainError(f"{where}a linear joint has no origin / point")
-        j = Joint(axis=axis, rotary=typ == "rotary", direction=direction, point=point, sign=1.0 if sign > 0 else -1.0)
+        offset = eval_expr(raw.get("offset", 0), params, f"{where}offset: ")
+        if offset and typ != "rotary":
+            raise ChainError(f"{where}\"offset\" is for rotary joints only")
+        j = Joint(axis=axis, rotary=typ == "rotary", direction=direction, point=point, sign=1.0 if sign > 0 else -1.0,
+                  offset=float(offset))
         if j.rotary:
             for key, attr in (("min", "lo"), ("max", "hi")):
                 if key in raw:
@@ -294,6 +300,8 @@ class Chain:
                 if np.isfinite(j.hi):
                     d["max"] = float(j.hi)
                 d["continuous"] = j.continuous
+                if j.offset:
+                    d["offset"] = j.offset
             return d
         return {"tool": [jd(j) for j in self.tool], "table": [jd(j) for j in self.table],
                 "part_origin": [float(x) for x in self.part_origin], "tip": [float(x) for x in self.tip],
