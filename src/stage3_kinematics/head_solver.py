@@ -1,6 +1,6 @@
 import numpy as np
 from src.common.schemas import CLDataTrajectory, MachineConfig, MachineStateVector, MachineTrajectory
-from src.stage3_kinematics.base import BaseKinematicSolver, resolve_c_angles, tool_alignment
+from src.stage3_kinematics.base import BaseKinematicSolver, resolve_branches, tool_alignment
 from src.stage3_kinematics.registry import KinematicsRegistry
 
 @KinematicsRegistry.register("swivel_head_xyzbc")
@@ -56,7 +56,8 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             b_angles.append(b_deg)
             valid_waypoints.append(wp)
 
-        c_angles = resolve_c_angles(raw_c_angles, b_angles, valid_waypoints, c_min, c_max)
+        b_angles, c_angles = resolve_branches(raw_c_angles, b_angles, valid_waypoints, b_min, b_max, c_min, c_max,
+                                              config.vertical_dead_zone_deg)
 
         for idx, wp in enumerate(valid_waypoints):
             b_deg = max(b_min, min(b_max, b_angles[idx]))

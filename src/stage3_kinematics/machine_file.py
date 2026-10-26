@@ -37,7 +37,7 @@ VERSION = 1
 PLANAR = "planar_3axis_xyz"
 GENERIC = "generic_chain"
 VALID_AXES = ("X", "Y", "Z", "A", "B", "C")
-CONFIG_FIELDS = ("joint_tolerance", "b_axis_dir", "c_axis_dir", "c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
+CONFIG_FIELDS = ("joint_tolerance", "vertical_dead_zone_deg", "b_axis_dir", "c_axis_dir", "c_axis_x", "c_axis_y", "c_axis_z", "pivot_offset_x", "pivot_offset_y", "pivot_offset_z", "eccentricity_x", "eccentricity_y",
                  "b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max", "max_3axis_tilt_deg")
 ROTARY_REQUIRED = ("b_axis_min", "b_axis_max", "c_axis_min", "c_axis_max")
 
