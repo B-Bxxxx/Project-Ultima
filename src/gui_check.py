@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, 
 
 from src import gui_theme
 from src.common.feature_styles import FEATURE_STYLES
-from src.common.gcode_check import Reconstruction, parse_gcode, reconstruct
+from src.common.gcode_check import Reconstruction, parse_gcode, reconstruct, table_map
 
 BAD_COLOR = (1.0, 0.15, 0.15, 1.0)
 
@@ -37,8 +37,8 @@ class CheckTab(QWidget):
         self.btn_open = QPushButton("Open G-code file...")
         self.btn_open.clicked.connect(self.open_file)
         self.cmb_frame = QComboBox()
-        self.cmb_frame.addItems(["Part (path on the part)", "Machine (axis positions)"])
-        self.cmb_frame.currentIndexChanged.connect(self.redraw)
+        self.cmb_frame.addItems(["Part (path on the part)", "Machine (axis positions)", "Machine motion (fixed view, table moves)"])
+        self.cmb_frame.currentIndexChanged.connect(self._frame_changed)
         self.chk_travel = QCheckBox("Travel")
         self.chk_travel.setChecked(True)
         self.chk_travel.toggled.connect(self.redraw)
@@ -113,6 +113,7 @@ class CheckTab(QWidget):
             self.txt.setPlainText(f"Error: {e}")
             return
         self.title = title
+        self._solver, self._cfg = solver, cfg
         self._warns = warns
         layers = [max(m.layer, 0) for m in self.rc.moves]
         self.layer.blockSignals(True)
@@ -137,6 +138,12 @@ class CheckTab(QWidget):
         self.slider.setRange(0, self._play[1] - self._play[0])
         self.slider.setValue(self._play[1] - self._play[0])
         self.slider.blockSignals(False)
+
+    def _frame_changed(self, *_):
+        if self.rc is not None:
+            self._clear_base()
+            self.frame_view()
+        self.redraw()
 
     def _layer_changed(self, *_):
         if self.rc is not None:
@@ -186,9 +193,66 @@ class CheckTab(QWidget):
         P = self.rc.part if self.cmb_frame.currentIndex() == 0 else self.rc.machine
         sel = ~np.array([self.rc.moves[max(i, 0)].feature == "travel" for i in self.rc.move_of_point])
         Q = P[sel] if sel.any() else P
+        if self.cmb_frame.currentIndex() == 2:                   # fixed view: the whole machine-frame range of the print + the table
+            r = self._table_radius()
+            Q = np.vstack([Q + [r, r, 0], Q - [r, r, 0]])
         lo, hi = Q.min(axis=0), Q.max(axis=0)
         self.view.opts["center"] = Vector(*((lo + hi) / 2))
         self.view.opts["distance"] = float(max(np.ptp(Q, axis=0).max(), 5.0)) * 1.8
+
+    def _table_radius(self) -> float:
+        part = self.rc.part
+        return float(max(np.ptp(part[:, 0]), np.ptp(part[:, 1]), 20.0)) * 0.75 + 10.0
+
+    def _redraw_motion(self, stop: int):
+        """Fixed camera, machine frame: the nozzle stays on its axis line, the table (and the part printed so far) tilts and turns."""
+        rc = self.rc
+        k = max(stop - 1, 0)
+        pose = rc.poses[k]
+        M, t = table_map(self._solver, self._cfg, pose)
+        p0 = self._play[0]
+        # deposited samples: everything up to the head (complete layers below + the playing layer); thinned to keep drawing fast
+        idx = np.arange(1, max(stop, 1))
+        feat = self._feat_arr[idx] if len(idx) else idx
+        keep = (feat != "travel") if len(idx) else np.zeros(0, bool)
+        if self.layer.value() >= 0:
+            keep &= self._layer_arr[idx] == self.layer.value()
+        idx = idx[keep]
+        stride = max(1, len(idx) // 25000)
+        idx = idx[::stride]
+        if len(idx):
+            a, b = rc.part[idx - 1] @ M.T + t, rc.part[idx] @ M.T + t
+            for st in FEATURE_STYLES:
+                sel = self._feat_arr[idx] == st.key
+                if sel.any():
+                    pts = np.empty((int(sel.sum()) * 2, 3), np.float32)
+                    pts[0::2], pts[1::2] = a[sel], b[sel]
+                    it = gl.GLLinePlotItem(pos=pts, color=st.color, mode="lines")
+                    self.view.addItem(it)
+                    self._items.append(it)
+        # the table: a circle and a cross in the part's bottom plane, moved by the same pose
+        r = self._table_radius()
+        c = rc.part[rc.part[:, 2] >= 0][:, :2].mean(axis=0) if len(rc.part) else np.zeros(2)
+        z0 = float(rc.part[:, 2].min())
+        ang = np.linspace(0, 2 * np.pi, 73)
+        circ = np.column_stack([c[0] + r * np.cos(ang), c[1] + r * np.sin(ang), np.full_like(ang, z0)])
+        cross = np.array([[c[0] - r, c[1], z0], [c[0] + r, c[1], z0], [c[0], c[1] - r, z0], [c[0], c[1] + r, z0]])
+        for pts, mode, col in ((circ, "line_strip", (0.55, 0.65, 0.8, 1.0)), (cross, "lines", (0.35, 0.4, 0.5, 1.0))):
+            it = gl.GLLinePlotItem(pos=(pts @ M.T + t).astype(np.float32), color=col, mode=mode)
+            self.view.addItem(it)
+            self._items.append(it)
+        tip = pose[:3]
+        it = gl.GLLinePlotItem(pos=np.array([tip, tip + [0, 0, 25.0]], np.float32), color=(1, 1, 1, 1), mode="lines", width=2)
+        self.view.addItem(it)                                          # the Z carriage / nozzle axis line (machine frame)
+        self._items.append(it)
+        head = gl.GLScatterPlotItem(pos=np.array([tip], np.float32), size=10, color=(1, 1, 1, 1))
+        self.view.addItem(head)
+        self._items.append(head)
+        mi = int(rc.move_of_point[k])
+        if mi >= 0:
+            mv = rc.moves[mi]
+            self.lbl_pos.setText(f"line {mv.line} | layer {mv.layer} | {mv.feature} | machine X{pose[0]:.2f} Y{pose[1]:.2f} Z{pose[2]:.2f} "
+                                 f"A{pose[3]:.1f} B{pose[4]:.1f} C{pose[5]:.1f}")
 
     def redraw(self, *_):
         if self.rc is None:
@@ -197,6 +261,10 @@ class CheckTab(QWidget):
             self.view.removeItem(it)
         self._items = []
         rc = self.rc
+        if self.cmb_frame.currentIndex() == 2:
+            self._clear_base()
+            self._redraw_motion(min(self._play[0] + self.slider.value(), len(rc.part)))
+            return
         P = rc.part if self.cmb_frame.currentIndex() == 0 else rc.machine
         m = len(P)
         p0, p1 = self._play

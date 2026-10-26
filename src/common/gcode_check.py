@@ -214,3 +214,26 @@ def reconstruct(moves: Sequence[Move], solver, config, step_deg: float = 2.0, ma
     if amb.any():
         warnings.append(f"{int(amb.sum())} extruding moves turn C by exactly 180 deg: the direction is the firmware's rounding choice")
     return Reconstruction(list(moves), mid, poses[:, :3].copy(), part, poses, dev, c_swing, t6, stats, warnings)
+
+
+def table_map(solver, config, pose, tool_len: float = 0.0):
+    """Rigid map of the PART into the MACHINE frame for one machine pose (x y z a b c): machine = M @ part + t.
+
+    The solver's inverse (`to_part_batch`) is affine in X Y Z for fixed rotary values, so it is probed at the origin and the
+    three unit vectors. Returns (M, t); (identity, 0) if the solver has no inverse (no rotary axes)."""
+    pose = np.asarray(pose, float)
+    cols = int(getattr(solver, "pose_columns", 5))
+    sel = [0, 1, 2, 4, 5] + ([3] if cols > 5 else [])
+    probe = np.tile(pose, (4, 1))
+    probe[0, :3] = 0.0
+    for k in range(3):
+        probe[k + 1, :3] = 0.0
+        probe[k + 1, k] = 1.0
+    got = solver.to_part_batch(config, probe[:, sel]) if hasattr(solver, "to_part_batch") else None
+    if got is None:
+        return np.eye(3), np.zeros(3)
+    got = np.asarray(got, float)
+    d = got[0]
+    A = (got[1:] - d).T                    # part = A @ xyz + d
+    Ai = np.linalg.inv(A)
+    return Ai, -Ai @ d

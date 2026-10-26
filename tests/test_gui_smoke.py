@@ -242,3 +242,21 @@ def test_playback_runs_through_the_last_layer_only(win):
     assert tab._base[0] == base_key                      # moving the slider does not rebuild the completed layers
     tab.layer.setValue(1)
     assert tab.slider.maximum() == int((tab._layer_arr == 1).sum())
+
+
+def test_check_tab_machine_motion_view(win):
+    """Fixed-camera machine view: it draws, and the table moves (its circle changes) while the camera does not."""
+    mi = win.machine_combo.findText("Generic 5-axis trunnion table (XYZBC)")
+    win.machine_combo.setCurrentIndex(mi)
+    gcode = ";LAYER:0\n; TYPE: outer_wall\nG1 X100 Y100 Z1 B90 C0 E0.1 F1500\n" + "\n".join(
+        f"G1 X{100 + k} Y{100 - k} Z1 B{90 + 5 * k} C{20 * k} E0.1 F1500" for k in range(1, 12))
+    tab = win.check_tab
+    tab.load_text(gcode, "t")
+    tab.cmb_frame.setCurrentIndex(2)
+    cam = (tab.view.opts["distance"], tuple(tab.view.opts["center"]))
+    tab.slider.setValue(tab.slider.maximum() // 3)
+    first = [np.array(i.pos).copy() for i in tab._items if hasattr(i, "pos") and getattr(i, "pos", None) is not None]
+    tab.slider.setValue(tab.slider.maximum())
+    last = [np.array(i.pos).copy() for i in tab._items if hasattr(i, "pos") and getattr(i, "pos", None) is not None]
+    assert first and last and (tab.view.opts["distance"], tuple(tab.view.opts["center"])) == cam
+    assert any(a.shape == b.shape and not np.allclose(a, b) for a, b in zip(first[-4:], last[-4:]))
