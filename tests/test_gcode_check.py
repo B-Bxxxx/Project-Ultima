@@ -117,3 +117,27 @@ def test_check_tab_loads_and_draws():
     tab.layer.setValue(0)
     app.processEvents()
     assert tab._items
+
+
+def test_table_map_is_the_inverse_of_the_part_map():
+    """machine = M part + t for any pose (trunnion with an offset B, a swivel head chain too)."""
+    import os
+    from src.common.gcode_check import table_map
+    from src.stage3_kinematics.machine_file import load_machine_file
+    from src.stage3_kinematics.registry import KinematicsRegistry
+    root = os.path.join(os.path.dirname(__file__), "..", "config")
+    for f, kin in (("machines/trunnion_5axis.json", "trunnion_table_xyzbc"), ("machines_experimental/chain_trunnion_5axis.json", "generic_chain")):
+        spec = load_machine_file(os.path.join(root, f))
+        cfg = spec.to_machine_config({"c_axis_x": 175.0, "c_axis_y": 82.0, "b_axis_offset_deg": 90.0, "b_axis_min": 0.0, "b_axis_max": 180.0,
+                                      "pivot_offset_z": 12.0})
+        sol = KinematicsRegistry.get_solver(kin)()
+        pose = np.array([120.0, 70.0, 30.0, 0.0, 130.0, 217.0])
+        M, t = table_map(sol, cfg, pose)
+        assert abs(np.linalg.det(M) - 1.0) < 1e-9
+        part = np.array([[3.0, -4.0, 5.0], [10.0, 20.0, 0.0]])
+        mach = part @ M.T + t
+        sel = [0, 1, 2, 4, 5]
+        back = sol.to_part_batch(cfg, np.column_stack([mach, np.tile(pose[[4, 5]], (2, 1))]))
+        np.testing.assert_allclose(back, part, atol=1e-8)
+        tip = sol.to_part_batch(cfg, pose[sel].reshape(1, 5))[0]
+        np.testing.assert_allclose(M @ tip + t, pose[:3], atol=1e-8)
