@@ -106,3 +106,9 @@ test implementation that must keep giving the same poses (tests/test_generic_cha
 reach the G-code today, A and a third rotary joint (6 axis) are in progress. In the hand-written solvers who carries whom is fixed
 (table: B carries C, head: C carries B). With one-sided B limits and `b_axis_dir = -1` the old solvers clamp B to 0 (they always compute B >= 0 in the
 program convention); `generic_chain` picks the branch inside the limits.
+
+## C flips 0 <-> 180 across a crest (found with the G-code checker on rounded_ridge, 5P-9.gcode)
+Where the layer normal crosses the vertical (the crest of a ridge) B passes through ~0 and the tilt direction flips; the solvers keep B >= 0 and
+turn C by 180 deg instead. The firmware turns C linearly inside the extruding move, and the nozzle (some mm from the C axis) draws a half circle on
+the part. `solve_refined` cannot split it away: the flip happens between two neighbouring points whatever their distance. The fix belongs in the
+branch choice (B signed through zero, C kept) - see the checker's `deviation` / "C turn" figures to measure it.

@@ -27,6 +27,7 @@ from src.common.view_model import (Playback, effective_layers, head_item, layer_
 from src.common.param_spec import ParamSpec
 from src.common import project_file
 from src.common.project_file import ProjectFileError
+from src.gui_check import CheckTab
 from src.gui_editors import FunctionEditor, MachineEditor
 from src import gui_theme
 from src.stage1_slicer.function_file import (
@@ -327,6 +328,8 @@ class MainWindow(QMainWindow):
         self.txt_gcode.setReadOnly(True)
         self.txt_gcode.setStyleSheet("font-family: monospace;")
         self.tabs.addTab(self.txt_gcode, "4. G-Code Preview")
+        self.check_tab = CheckTab(self._check_machine, lambda: self.gcode)
+        self.tabs.addTab(self.check_tab, "5. G-Code Check")
         right_lay.addWidget(self.tabs, 1)
 
         self.lbl_status = QLabel("-")
@@ -1365,6 +1368,14 @@ class MainWindow(QMainWindow):
             self._stop_timer()
 
     # ------------------------------------------------------------------ pipeline
+    def _check_machine(self):
+        """(solver, config, spec) of the selected machine, for the G-code checker."""
+        mspec = self.current_machine()
+        if mspec is None:
+            raise ValueError("no machine selected")
+        cfg = mspec.to_machine_config(self.machine_form.values())
+        return KinematicsRegistry.get_solver(mspec.kinematics)(), cfg, mspec
+
     def _thickness_model(self, machine: MachineSpec) -> str:
         choice = self.thickness_combo.currentText()
         if choice == "auto":
