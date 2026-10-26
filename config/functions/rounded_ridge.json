@@ -1,0 +1,27 @@
+{
+  "format": "cam-function",
+  "version": 2,
+  "name": "Rounded ridge",
+  "description": "Inverted V: the layers dip towards the sides along X and the ridge in the middle is rounded (hyperbola, apex radius = Radius). The dip max(f) must stay below the transition height - see the suggested minimum under Transition H.",
+  "expression": "k * (np.sqrt(x**2 + (R * k)**2) - R * k)",
+  "parameters": {
+    "k": {
+      "label": "Slope (tan)",
+      "unit": "-",
+      "default": 0.1,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "description": "Slope of the flanks (tangent of the angle)"
+    },
+    "R": {
+      "label": "Apex radius",
+      "unit": "mm",
+      "default": 5.0,
+      "min": 0.5,
+      "max": 50.0,
+      "step": 0.5,
+      "description": "Radius of the rounded ridge in the middle"
+    }
+  }
+}

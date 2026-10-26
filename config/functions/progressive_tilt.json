@@ -1,0 +1,28 @@
+{
+  "format": "cam-function",
+  "version": 2,
+  "name": "Progressive tilt",
+  "description": "Every layer is a plane tilted about the X axis; the tilt grows linearly from the first to the last layer (t = 0..1). The pivot line is the lowest-Y edge of the part (y_min). Template for function files: every parameter listed here appears as a named input field in the GUI.",
+  "tilt_x_deg": "start_tilt_deg + (end_tilt_deg - start_tilt_deg) * t",
+  "pivot_y": "y_min",
+  "parameters": {
+    "start_tilt_deg": {
+      "label": "Start tilt",
+      "unit": "deg",
+      "default": 0.0,
+      "min": -45.0,
+      "max": 45.0,
+      "step": 1.0,
+      "description": "Tilt of the first layer"
+    },
+    "end_tilt_deg": {
+      "label": "End tilt",
+      "unit": "deg",
+      "default": 10.0,
+      "min": -45.0,
+      "max": 45.0,
+      "step": 1.0,
+      "description": "Tilt of the last layer"
+    }
+  }
+}

@@ -143,7 +143,7 @@ def test_sloped_surface_gets_a_solid_ring_over_a_sparse_core():
     regions = StandardToolpathGenerator().compute_layer_regions(model, profile)
 
     def r_region(idx):                       # analytic radius of the eroded infill region
-        return 10.0 * (1.0 - idx / 10.0) - 2 * NOZZLE
+        return 10.0 * (1.0 - (idx + 0.5) / 10.0) - 2 * NOZZLE      # layers are cut at mid-height
 
     for idx in (2, 3, 4, 5):
         r = regions[idx]
@@ -373,3 +373,27 @@ def test_layer_index_survives_json_and_old_files_still_load(tmp_path):
 
     legacy = CLDataWaypoint(**{"x": 0, "y": 0, "z": 0, "feedrate": 100})     # file written before layer_index existed
     assert legacy.layer_index == 0
+
+
+# ---------------------------------------------------------------------------------------------
+# infill overlap into the walls
+# ---------------------------------------------------------------------------------------------
+def _infill_reach(overlap):
+    mesh = trimesh.creation.box(extents=(20, 20, 6))
+    mesh.apply_translation((0, 0, 3))
+    model = _slice(mesh)
+    profile = _profile(infill_overlap=overlap, top_solid_layers=1, bottom_solid_layers=1)
+    layers = {l.layer_index: l for l in StandardToolpathGenerator().generate_features(model, profile)}
+    pts = [p for c in layers[3].contours if c.feature_type == "infill" for p in c.points]
+    assert len(pts) > 10
+    return max(max(abs(p[0]), abs(p[1])) for p in pts)
+
+
+def test_infill_overlap_reaches_into_the_wall_but_never_through_it():
+    edge = 10.0 - 2 * NOZZLE                       # infill region boundary (outline eroded by 2 walls)
+    assert _infill_reach(0.0) == pytest.approx(edge, abs=0.02)
+    reach = _infill_reach(0.25)
+    assert reach == pytest.approx(edge + 0.25 * NOZZLE, abs=0.02)
+    assert reach < 10.0 - NOZZLE                   # stays inside the centre line of the innermost wall
+    with pytest.raises(Exception):
+        _profile(infill_overlap=0.8)

@@ -29,6 +29,7 @@ import shapely.geometry as sg
 from shapely import affinity
 from shapely.errors import GEOSException
 from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -37,12 +38,13 @@ from src.common.schemas import (
     UniversalLayer, UniversalSlicedModel,
 )
 from src.stage2_toolpath.base import BaseToolpathGenerator
+from src.stage2_toolpath.simplify import simplify_path
 
 logger = logging.getLogger(__name__)
 
 # Print order of the features of one layer. Walls are printed per outline from the innermost
 # wall to the outer wall, then the solid skin, then the sparse infill.
-FEATURE_ORDER = ("inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
+FEATURE_ORDER = ("skirt", "brim", "inner_wall", "outer_wall", "bottom_solid", "top_solid", "infill")
 
 # Scanline angle (deg) of solid skin layers; alternates sign with the layer index.
 SOLID_INFILL_ANGLE_DEG = 45.0
@@ -53,7 +55,47 @@ MIN_REGION_AREA_FACTOR = 0.25     # regions smaller than factor * nozzle^2 are n
 # A zigzag link may leave the region by at most this fraction of the line spacing.
 LINK_TOLERANCE_FACTOR = 0.1
 
+# Wall direction: every outer ring runs counter-clockwise and every hole clockwise (shapely orient sign=+1),
+# so the material is always on the left of the nozzle - in every layer and for every wall level.
+WALL_ORIENTATION = 1.0
+
 _EMPTY = sg.Polygon()
+
+
+def start_at_seam(coords: Sequence[Tuple[float, float]], angle_deg: Optional[float]) -> List[Tuple[float, float]]:
+    """
+    Rotates a closed ring so that it starts (and ends) at its seam: the point farthest in the direction
+    `angle_deg` (0 = +X, 90 = +Y, counter-clockwise). Every ring of every layer and wall level then starts
+    on the same side of the part, so the seam is one clean line. When a straight edge faces that direction
+    (several vertices tie) the seam is the middle of that edge - a vertex is inserted there. angle_deg=None
+    keeps the ring as it is.
+    """
+    pts = [tuple(c) for c in coords]
+    if angle_deg is None or len(pts) < 4:
+        return pts
+    ring = np.asarray(pts[:-1] if pts[0] == pts[-1] else pts, float)
+    d = np.array([math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))])
+    perp = np.array([-d[1], d[0]])
+    s = ring @ d
+    cand = np.flatnonzero(s >= s.max() - 1e-6)
+    if len(cand) == 1:
+        k = int(cand[0])
+    else:
+        t = ring[cand] @ perp
+        q = d * s.max() + perp * 0.5 * (t.min() + t.max())               # middle of the edge facing the seam
+        nxt = np.roll(ring, -1, axis=0)
+        ab = nxt - ring
+        u = np.clip(np.einsum("ij,ij->i", q - ring, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-18), 0.0, 1.0)
+        dist = np.linalg.norm(ring + u[:, None] * ab - q, axis=1)
+        e = int(np.argmin(dist))                                          # the segment e -> e+1 holds q
+        vert = np.flatnonzero(np.linalg.norm(ring - q, axis=1) < 1e-9)
+        if len(vert):
+            k = int(vert[0])
+        else:
+            ring = np.insert(ring, e + 1, q, axis=0)
+            k = e + 1
+    out = np.roll(ring, -k, axis=0)
+    return [tuple(map(float, p)) for p in out] + [tuple(map(float, out[0]))]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -64,7 +106,7 @@ def _polygons_of(geom: Optional[BaseGeometry]) -> List[sg.Polygon]:
     if geom is None or geom.is_empty:
         return []
     if geom.geom_type == "Polygon":
-        return [geom]
+        return [orient(geom, WALL_ORIENTATION)]
     if hasattr(geom, "geoms"):
         parts: List[sg.Polygon] = []
         for g in geom.geoms:
@@ -173,7 +215,7 @@ def rings_to_polygons(contours: Sequence[SpatialContour], layer_index: Optional[
     for i in order:
         if depth[i] % 2 == 0:
             holes = [rings[k].exterior.coords for k in order if parent[k] == i and depth[k] % 2 == 1]
-            polygons.append(sg.Polygon(rings[i].exterior.coords, holes))
+            polygons.append(orient(sg.Polygon(rings[i].exterior.coords, holes), WALL_ORIENTATION))
     return polygons
 
 
@@ -273,12 +315,55 @@ class LayerRegions:
     """Shapely description of one layer (XY plane)."""
     layer_index: int
     polygons: List[sg.Polygon] = field(default_factory=list)   # printable outlines (holes included)
-    # wall rings per outline: [(level, ring coords)], level 0 = outer wall
-    wall_groups: List[List[Tuple[int, List[Tuple[float, float]]]]] = field(default_factory=list)
+    # wall rings per outline: [(level, ring coords, chain)], level 0 = outer wall; a chain is the series of
+    # nested rings of one boundary (the outer outline, or one hole), from the innermost wall to the outer wall
+    wall_groups: List[List[Tuple[int, List[Tuple[float, float]], int]]] = field(default_factory=list)
     region: BaseGeometry = _EMPTY          # infill region = outlines eroded by all walls
     bottom_solid: BaseGeometry = _EMPTY
     top_solid: BaseGeometry = _EMPTY
     sparse: BaseGeometry = _EMPTY
+
+
+def _outside_rings(polygons, offsets, seam_angle_deg=None):
+    """Closed rings running `offsets` (mm, in the given order) outside the outlines; holes are not surrounded."""
+    if not polygons:
+        return []
+    solid = _union([sg.Polygon(p.exterior) for p in polygons])
+    rings = []
+    for d in offsets:
+        try:
+            grown = solid.buffer(d, join_style=1)
+        except GEOSException:
+            continue
+        for poly in _polygons_of(grown):
+            ring = orient(sg.Polygon(poly.exterior), sign=WALL_ORIENTATION).exterior.coords
+            rings.append(start_at_seam(ring, seam_angle_deg))
+    return rings
+
+
+def brim_loops(width: float, nozzle: float) -> int:
+    """Number of nozzle-wide brim loops that fit in `width`."""
+    return int(math.floor(width / nozzle + 1e-9)) if nozzle > 0 and width > 0 else 0
+
+
+def brim_rings(polygons, width: float, nozzle: float, seam_angle_deg=None):
+    """
+    Brim loops around the OUTSIDE of the given outlines: as many nozzle-wide loops as fit in `width`,
+    the outermost first. Loop k runs k*nozzle outside the outline (the outer wall is centred on it).
+    """
+    n = brim_loops(width, nozzle)
+    return _outside_rings(polygons, [k * nozzle for k in range(n, 0, -1)], seam_angle_deg)
+
+
+def skirt_rings(polygons, loops: int, distance: float, nozzle: float, brim_width: float = 0.0, seam_angle_deg=None):
+    """
+    `loops` free-standing loops around the outlines (and the brim), the innermost `distance` away from the
+    outermost brim loop (or from the outline without a brim); the outermost loop first.
+    """
+    if loops <= 0:
+        return []
+    start = brim_loops(brim_width, nozzle) * nozzle + distance + 0.5 * nozzle
+    return _outside_rings(polygons, [start + j * nozzle for j in range(loops - 1, -1, -1)], seam_angle_deg)
 
 
 class StandardToolpathGenerator(BaseToolpathGenerator):
@@ -356,15 +441,28 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
             region_parts = []
             for outline in plan.polygons:
-                group: List[Tuple[int, List[Tuple[float, float]]]] = []
+                group: List[Tuple[int, List[Tuple[float, float]], int]] = []
+                prev: List[Tuple[int, sg.LinearRing]] = []          # (chain, ring) of the previous wall level
+                n_chains = 0
                 current: BaseGeometry = outline
                 for level in range(profile.num_perimeters):
                     if current.is_empty:
                         break
+                    this_level: List[Tuple[int, sg.LinearRing]] = []
+                    ring_list = []
                     for cp in _polygons_of(current):
-                        group.append((level, list(cp.exterior.coords)))
-                        for interior in cp.interiors:
-                            group.append((level, list(interior.coords)))
+                        ring_list.append(cp.exterior)
+                        ring_list.extend(cp.interiors)
+                    for lr in ring_list:
+                        # the ring continues the nearest ring of the previous level (the same boundary, one wall in)
+                        if prev:
+                            chain = min(prev, key=lambda pc: pc[1].distance(lr))[0]
+                        else:
+                            chain = n_chains
+                            n_chains += 1
+                        this_level.append((chain, lr))
+                        group.append((level, start_at_seam(lr.coords, profile.seam_angle_deg), chain))
+                    prev = this_level
                     try:
                         current = current.buffer(-offset)
                     except GEOSException as exc:
@@ -405,8 +503,11 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         strategy = self._build_strategy(model)
         plans = self.compute_layer_regions(model, profile)
         out_layers: List[UniversalLayer] = []
+        ordered_layers = sorted(model.layers, key=lambda l: l.layer_index)
+        # the first layer that has any printable outline carries the brim
+        first_layer = next((l for l in ordered_layers if plans[l.layer_index].polygons), None)
 
-        for layer in sorted(model.layers, key=lambda l: l.layer_index):
+        for layer in ordered_layers:
             plan = plans[layer.layer_index]
             layer_idx = layer.layer_index
 
@@ -419,34 +520,64 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 for i in range(1, len(coords)):
                     subdivided.extend(self._subdivide_segment(subdivided[-1], coords[i], profile.max_segment_length))
 
-                pts, normals, thicknesses = [], [], []
-                for x, y in subdivided:
-                    if strategy:
-                        pt_3d = strategy.project_to_layer(x, y, _idx)
-                        norm = strategy.compute_normal(pt_3d, _idx)
-                        thick = strategy.compute_thickness(pt_3d, _idx)
-                    else:
-                        pt_3d = (x, y, _layer.z_height)
-                        norm = (0.0, 0.0, 1.0)
-                        thick = profile.layer_height
-                    pts.append(pt_3d)
-                    normals.append(norm)
-                    thicknesses.append(thick)
+                if strategy:
+                    arr = strategy.project_points(subdivided, _idx)
+                    pts = [tuple(map(float, p)) for p in arr]
+                    normals = [tuple(map(float, n)) for n in strategy.normals_at(arr, _idx)]
+                    thicknesses = [float(t) for t in strategy.thicknesses_at(arr, _idx)]
+                else:
+                    pts = [(x, y, _layer.z_height) for x, y in subdivided]
+                    normals = [(0.0, 0.0, 1.0)] * len(pts)
+                    thicknesses = [profile.layer_height] * len(pts)
+                if f_type in ("skirt", "brim"):
+                    thicknesses = [float(profile.layer_height)] * len(pts)     # on the bed: the nominal bead, not the function's local gap
+                tol = profile.infill_path_tolerance if f_type == "infill" else profile.path_tolerance
+                if tol > 0.0 and len(pts) > 2:
+                    keep, h_eff = simplify_path(pts, normals, thicknesses, tol, profile.min_segment_length,
+                                                profile.path_angle_tolerance_deg)
+                    pts = [pts[i] for i in keep]
+                    normals = [normals[i] for i in keep]
+                    thicknesses = [thicknesses[0]] + h_eff
                 contours.append(SpatialContour(points=pts, normals=normals,
                                                thicknesses=thicknesses, feature_type=f_type))
 
+            # 0. skirt and brim: only around the very first layer
+            if profile.skirt_loops > 0 and layer is first_layer:
+                for ring in skirt_rings(plan.polygons, profile.skirt_loops, profile.skirt_distance,
+                                        profile.nozzle_diameter, profile.brim_width, profile.seam_angle_deg):
+                    add_contour(ring, "skirt")
+            if profile.brim_width > 0 and layer is first_layer:
+                for ring in brim_rings(plan.polygons, profile.brim_width, profile.nozzle_diameter, profile.seam_angle_deg):
+                    add_contour(ring, "brim")
+
             # 1. walls: per outline from the innermost wall to the outer wall
+            # (one boundary - the outline or a hole - is printed in one go, wall after wall; the next boundary is
+            # the nearest one: no jumping between the outline and its holes level by level)
             for group in plan.wall_groups:
-                for level in sorted({lv for lv, _ in group}, reverse=True):
-                    f_type = "outer_wall" if level == 0 else "inner_wall"
-                    for lv, ring in group:
-                        if lv == level:
-                            add_contour(ring, f_type)
+                chains: Dict[int, List[Tuple[int, List[Tuple[float, float]]]]] = {}
+                for lv, ring, chain in group:
+                    chains.setdefault(chain, []).append((lv, ring))
+                remaining = list(chains)
+                while remaining:
+                    pos = contours[-1].points[-1][:2] if contours else None
+
+                    def start_dist(c):
+                        if pos is None:
+                            return 0.0
+                        first = max(chains[c], key=lambda t: t[0])[1][0]       # innermost ring of the chain
+                        return math.dist(pos, first)
+                    nxt = min(remaining, key=start_dist)
+                    remaining.remove(nxt)
+                    for lv, ring in sorted(chains[nxt], key=lambda t: -t[0]):
+                        add_contour(ring, "outer_wall" if lv == 0 else "inner_wall")
 
             # 2. solid skin (100 % density, +-45 deg alternating per layer)
             solid_angle = SOLID_INFILL_ANGLE_DEG if layer_idx % 2 == 0 else -SOLID_INFILL_ANGLE_DEG
             solid_spacing = profile.nozzle_diameter
+            grow = profile.infill_overlap * profile.nozzle_diameter      # small overlap into the wall / between skin and core
             for f_type, geom in (("bottom_solid", plan.bottom_solid), ("top_solid", plan.top_solid)):
+                if grow > 0 and not geom.is_empty:
+                    geom = geom.buffer(grow)
                 for chain in fill_region(geom, solid_spacing, solid_angle):
                     add_contour(chain, f_type)
 
@@ -455,7 +586,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             if density > 0 and not plan.sparse.is_empty:
                 spacing = profile.nozzle_diameter / min(density, 1.0)
                 angle = profile.infill_angle_deg if layer_idx % 2 == 0 else -profile.infill_angle_deg
-                for chain in fill_region(plan.sparse, spacing, angle):
+                sparse = plan.sparse.buffer(grow) if grow > 0 else plan.sparse
+                for chain in fill_region(sparse, spacing, angle):
                     add_contour(chain, "infill")
 
             out_layers.append(UniversalLayer(layer_index=layer_idx, z_height=layer.z_height,

@@ -1,0 +1,156 @@
+{
+  "format": "cam-machine",
+  "version": 1,
+  "name": "Nested demo: 5-axis trunnion table (XYZBC)",
+  "description": "Nested form: B carries C on the table; X, Y, Z implicit.",
+  "kinematics": "generic_chain",
+  "axes": [
+    "X",
+    "Y",
+    "Z",
+    "B",
+    "C"
+  ],
+  "chain": {
+    "part_origin": [
+      "c_axis_x + eccentricity_x",
+      "c_axis_y + eccentricity_y",
+      "c_axis_z"
+    ],
+    "table": {
+      "B": {
+        "origin": [
+          "pivot_offset_x",
+          "pivot_offset_z"
+        ],
+        "sign": "b_axis_dir",
+        "limits": [
+          "b_axis_min",
+          "b_axis_max"
+        ],
+        "carries": {
+          "C": {
+            "origin": [
+              "c_axis_x",
+              "c_axis_y"
+            ],
+            "sign": "c_axis_dir",
+            "limits": [
+              "c_axis_min",
+              "c_axis_max"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "parameters": {
+    "c_axis_x": {
+      "label": "C axis X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_y": {
+      "label": "C axis Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_z": {
+      "label": "C axis Z (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "joint_tolerance": {
+      "label": "Interpolation tolerance",
+      "unit": "mm",
+      "default": 0.02,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "b_axis_dir": {
+      "label": "B direction (+1 / -1)",
+      "unit": "",
+      "default": 1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 2.0
+    },
+    "b_axis_offset_deg": {
+      "label": "B offset (level table)",
+      "unit": "deg",
+      "default": 0.0,
+      "min": -360.0,
+      "max": 360.0
+    },
+    "c_axis_dir": {
+      "label": "C direction (+1 / -1)",
+      "unit": "",
+      "default": 1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 2.0
+    },
+    "b_axis_min": {
+      "label": "B min",
+      "unit": "deg",
+      "default": -90.0,
+      "min": -180.0,
+      "max": 180.0
+    },
+    "b_axis_max": {
+      "label": "B max",
+      "unit": "deg",
+      "default": 90.0,
+      "min": -180.0,
+      "max": 180.0
+    },
+    "c_axis_min": {
+      "label": "C min",
+      "unit": "deg",
+      "default": -36000.0,
+      "min": -360000.0,
+      "max": 360000.0
+    },
+    "c_axis_max": {
+      "label": "C max",
+      "unit": "deg",
+      "default": 36000.0,
+      "min": -360000.0,
+      "max": 360000.0
+    },
+    "pivot_offset_x": {
+      "label": "B axis X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "pivot_offset_y": {
+      "label": "B axis Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "pivot_offset_z": {
+      "label": "B axis Z (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "eccentricity_x": {
+      "label": "C eccentricity X",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "eccentricity_y": {
+      "label": "C eccentricity Y",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "vertical_dead_zone_deg": {
+      "label": "Vertical dead zone",
+      "unit": "deg",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 10.0,
+      "step": 0.5
+    }
+  }
+}

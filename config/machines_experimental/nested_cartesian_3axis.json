@@ -1,0 +1,58 @@
+{
+  "format": "cam-machine",
+  "version": 1,
+  "name": "Nested demo: 3-axis Cartesian",
+  "description": "Nested form without any rotary axis.",
+  "kinematics": "generic_chain",
+  "axes": [
+    "X",
+    "Y",
+    "Z"
+  ],
+  "build_volume": {
+    "x": [
+      0,
+      220
+    ],
+    "y": [
+      0,
+      220
+    ],
+    "z": [
+      0,
+      250
+    ]
+  },
+  "chain": {
+    "part_origin": [
+      "c_axis_x",
+      "c_axis_y",
+      "c_axis_z"
+    ]
+  },
+  "parameters": {
+    "max_3axis_tilt_deg": {
+      "label": "Max. surface tilt",
+      "unit": "deg",
+      "default": 25.0,
+      "min": 0.0,
+      "max": 90.0,
+      "description": "A warning is logged when a layer surface is tilted more than this."
+    },
+    "c_axis_x": {
+      "label": "Part origin X (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_y": {
+      "label": "Part origin Y (machine)",
+      "unit": "mm",
+      "default": 0.0
+    },
+    "c_axis_z": {
+      "label": "Part origin Z (machine)",
+      "unit": "mm",
+      "default": 0.0
+    }
+  }
+}

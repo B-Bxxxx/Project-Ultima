@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import trimesh
 from typing import List, Any, Dict, Optional
@@ -5,6 +7,14 @@ from src.common.schemas import SlicerPluginParameterSchema, UniversalLayer, Spat
 from src.stage1_slicer.base import BaseSlicerPlugin
 from src.stage1_slicer.registry import PluginRegistry
 from src.stage1_slicer.math_strategies import build_strategy
+from src.common.simplify import simplify_ring
+
+JOIN_TOLERANCE = 0.01          # mm: open ends this close are the same point (sliver triangles)
+MIN_CLIP_AREA = 0.01             # mm2: smaller clipped pieces are not printable
+MIN_CONTOUR_LENGTH = 0.05
+COPLANAR_TOL = 1e-6      # a mesh vertex this close to the slice plane = a face lies IN the plane
+COPLANAR_NUDGE = 1e-4    # the plane is then moved this far (along its normal) to one side      # mm: shorter traced contours are numerical debris
+
 
 @PluginRegistry.register("universal_field_slicer")
 class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
@@ -65,10 +75,11 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
         metadata["strategy"] = strategy_name
         metadata.update(strategy.get_resolved_params())
 
+        # raw contours follow the (possibly very fine) mesh; drop points that move the outline < tol (mm)
+        # (external_field: Stage 2 rebuilds f from these contour points, so they must stay dense -> default off)
+        tol = float(parameters.get("contour_tolerance", 0.0 if strategy_name == "external_field" else 0.005))
         layers = []
 
-        # 1. Forward Mapping (Deform Mesh)
-        deformed_mesh = strategy.deform_mesh()
 
         # 2. Slice Mesh
         num_layers = strategy.get_layer_count()
@@ -76,31 +87,36 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
             plane_origin, plane_normal = strategy.get_slice_plane(layer_idx)
 
             # Slice the deformed mesh
-            path_2d = trimesh.intersections.mesh_plane(deformed_mesh, plane_normal, plane_origin)
+            path_2d = self._section(strategy.slice_source(layer_idx), plane_normal, plane_origin)
 
             if path_2d is None or len(path_2d) == 0:
                 continue
 
             # Extract raw contours from intersection segments
             contours = self._process_trimesh_segments_to_contours(path_2d)
+            # a plane that grazes a vertex leaves micro loops (a few microns long) - no material in them
+            contours = [c for c in contours if self._path_length(c.points) >= MIN_CONTOUR_LENGTH]
+            region = strategy.layer_region(layer_idx)
+            if region is not None:                      # e.g. the partial base layers of the ramp transition mode
+                contours = self._clip_contours(contours, region, plane_origin[2], layer_idx)
+                if not contours:
+                    continue
 
             if contours:
                 # Store default normals on the raw boundary contour so Stage 1 tests continue passing
                 # (Stage 2 will evaluate the true normals for perimeter/infill generation anyway)
                 for contour in contours:
-                    undeformed_normals = []
-                    undeformed_pts = []
-                    thicknesses = []
-                    for pt in contour.points:
-                        u_pt = strategy.undeform_point(pt, layer_idx)
-                        norm = strategy.compute_normal(u_pt, layer_idx)
-                        thick = strategy.compute_thickness(u_pt, layer_idx)
-                        undeformed_pts.append(u_pt)
-                        undeformed_normals.append(norm)
-                        thicknesses.append(thick)
-                    contour.points = undeformed_pts
-                    contour.normals = undeformed_normals
-                    contour.thicknesses = thicknesses
+                    pts_d = np.asarray(contour.points, float)
+                    undeformed = strategy.undeform_points(pts_d, layer_idx)
+                    if tol > 0.0:                                 # simplify the REAL 3D outline
+                        undeformed = simplify_ring(undeformed, tol)
+                    xy = undeformed[:, :2]
+                    contour.points = [tuple(map(float, p)) for p in undeformed]
+                    contour.normals = [tuple(map(float, n)) for n in strategy.normals_at(undeformed, layer_idx)]
+                    contour.thicknesses = [float(t) for t in strategy.thicknesses_at(undeformed, layer_idx)]
+                    vg, ng = strategy.layer_gaps_batch(xy, layer_idx)
+                    contour.vertical_gaps = [float(v) for v in vg]
+                    contour.normal_gaps = [float(v) for v in ng]
                     contour.feature_type = "boundary"
 
                 z_nominal = plane_origin[2]
@@ -108,37 +124,137 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
 
         return UniversalSlicedModel(layers=layers, metadata=metadata)
 
+    @staticmethod
+    def _clip_contours(contours: List[SpatialContour], region, z: float, layer_idx: int) -> List[SpatialContour]:
+        """Intersects the closed rings of a layer with a shapely region; returns the outline rings (holes included)."""
+        from src.stage2_toolpath.contour_generator import rings_to_polygons     # pure function, shared nesting logic
+        out: List[SpatialContour] = []
+        for poly in rings_to_polygons(contours, layer_idx):
+            part = poly.intersection(region)
+            geoms = getattr(part, "geoms", [part])
+            for g in geoms:
+                if g.geom_type != "Polygon" or g.area < MIN_CLIP_AREA:
+                    continue
+                for ring in [g.exterior, *g.interiors]:
+                    pts = [(float(x), float(y), float(z)) for x, y in ring.coords]
+                    out.append(SpatialContour(points=pts, normals=[(0.0, 0.0, 1.0)] * len(pts)))
+        return out
+
+    @staticmethod
+    def _section(mesh, normal, origin):
+        """
+        Plane section of the mesh. When a flat face lies exactly IN the plane (e.g. the top of a slab at a
+        mid-layer height) the section degenerates into open, broken loops. The plane is then moved by a
+        tiny nudge to the side that gives the larger section (the side with material), the result is closed.
+        """
+        n = np.asarray(normal, float)
+        o = np.asarray(origin, float)
+        V = mesh.vertices
+        if len(V) and np.any(np.abs((V - o) @ n) < COPLANAR_TOL):
+            best, best_len = None, -1.0
+            for sign in (-1.0, 1.0):
+                path = trimesh.intersections.mesh_plane(mesh, normal, o + sign * COPLANAR_NUDGE * n)
+                if path is None or len(path) == 0:
+                    continue
+                length = float(np.linalg.norm(np.asarray(path)[:, 1] - np.asarray(path)[:, 0], axis=1).sum())
+                if length > best_len:
+                    best, best_len = path, length
+            if best is not None:
+                return best
+        return trimesh.intersections.mesh_plane(mesh, normal, origin)
+
+    @staticmethod
+    def _path_length(points) -> float:
+        P = np.asarray(points, float)
+        return float(np.linalg.norm(np.diff(P, axis=0), axis=1).sum()) if len(P) > 1 else 0.0
+
     def _process_trimesh_segments_to_contours(self, segments: np.ndarray, default_normal: List[float] = [0, 0, 1]) -> List[SpatialContour]:
         """
         Converts unordered line segments (N, 2, 3) into ordered SpatialContours.
         """
-        import networkx as nx
-        G = nx.Graph()
+        # Segments -> polylines by TRACING (every segment is used exactly once).
+        # Why not nx.find_cycle: a plane that passes through a mesh vertex, or two vertices that
+        # round to the same key, gives nodes of degree > 2 or zero-length (self-loop) edges; the
+        # first cycle found then skips part of the loop (jagged contour) or is a 1-edge loop that
+        # silently throws the whole ring away.
         precision = 4
-
+        exact = {}
+        adj = {}
         for p1, p2 in segments:
-            p1_t = (round(p1[0], precision), round(p1[1], precision), round(p1[2], precision))
-            p2_t = (round(p2[0], precision), round(p2[1], precision), round(p2[2], precision))
-            G.add_node(p1_t, exact=p1)
-            G.add_node(p2_t, exact=p2)
-            G.add_edge(p1_t, p2_t)
+            k1 = (round(float(p1[0]), precision), round(float(p1[1]), precision), round(float(p1[2]), precision))
+            k2 = (round(float(p2[0]), precision), round(float(p2[1]), precision), round(float(p2[2]), precision))
+            if k1 == k2:
+                continue                                   # zero-length segment
+            exact.setdefault(k1, p1)
+            exact.setdefault(k2, p2)
+            adj.setdefault(k1, []).append(k2)
+            adj.setdefault(k2, []).append(k1)
 
+        used = set()
+
+        def take(u):
+            for v in adj[u]:
+                e = (u, v) if u <= v else (v, u)
+                if e not in used:
+                    used.add(e)
+                    return v
+            return None
+
+        def trace(start):
+            path = [start]
+            cur = start
+            while True:
+                nxt = take(cur)
+                if nxt is None:
+                    return path
+                path.append(nxt)
+                cur = nxt
+
+        # open paths first (they start at nodes of odd degree), then the closed loops
+        order = [k for k in adj if len(adj[k]) % 2 == 1] + list(adj)
         contours = []
-        for component in nx.connected_components(G):
-            subgraph = G.subgraph(component)
-            try:
-                cycle = nx.find_cycle(subgraph)
-                points = []
-                for u, v in cycle:
-                    points.append(tuple(float(x) for x in G.nodes[u]['exact']))
-                if points:
-                    points.append(points[0])
-                normals = [tuple(float(x) for x in default_normal)] * len(points)
-                contours.append(SpatialContour(points=points, normals=normals))
-            except nx.NetworkXNoCycle:
-                path_nodes = list(nx.dfs_preorder_nodes(subgraph))
-                points = [tuple(float(x) for x in G.nodes[n]['exact']) for n in path_nodes]
+        for start in order:
+            while True:
+                path = trace(start)
+                if len(path) < 2:
+                    break
+                points = [tuple(float(x) for x in exact[k]) for k in path]
                 normals = [tuple(float(x) for x in default_normal)] * len(points)
                 contours.append(SpatialContour(points=points, normals=normals))
 
-        return contours
+        return self._join_open_ends(contours, JOIN_TOLERANCE)
+
+    @staticmethod
+    def _join_open_ends(contours: List[SpatialContour], tol: float) -> List[SpatialContour]:
+        """
+        A thin sliver triangle can put two section points a few microns apart that are NOT the same key
+        after rounding; the ring then ends in two open pieces. Open pieces whose end points are closer
+        than `tol` are chained (and a piece whose own ends are that close is closed).
+        """
+        def is_open(c):
+            return len(c.points) >= 2 and math.dist(c.points[0], c.points[-1]) > 1e-9
+
+        pieces = [c for c in contours if is_open(c)]
+        done = [c for c in contours if not is_open(c)]
+        while pieces:
+            cur = pieces.pop()
+            P = list(cur.points)
+            while True:
+                if math.dist(P[0], P[-1]) <= tol and len(P) > 2:
+                    P.append(P[0])                                   # own ends meet -> close the ring
+                    break
+                best = None
+                for j, o in enumerate(pieces):
+                    for rev in (False, True):
+                        Q = o.points[::-1] if rev else o.points
+                        d = math.dist(P[-1], Q[0])
+                        if d <= tol and (best is None or d < best[0]):
+                            best = (d, j, Q)
+                if best is None:
+                    break
+                _, j, Q = best
+                pieces.pop(j)
+                P.extend(Q[1:] if best[0] < 1e-9 else Q)
+            normals = [tuple(cur.normals[0])] * len(P)
+            done.append(SpatialContour(points=P, normals=normals))
+        return done

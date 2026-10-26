@@ -72,7 +72,8 @@ def run_stage3(input_path: str, config_path: str, output_path: str):
         sys.exit(1)
 
     solver = solver_cls()
-    machine_traj = solver.solve(trajectory, config)
+    from src.stage3_kinematics.refine import solve_refined
+    machine_traj = solve_refined(solver, trajectory, config)
     machine_traj.to_json_file(output_path)
     print(f"Stage 3 complete. Output saved to {output_path}")
 
