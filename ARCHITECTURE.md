@@ -101,6 +101,16 @@ Print order inside a layer is `FEATURE_ORDER = (inner_wall, outer_wall, bottom_s
 | `planar_3axis_xyz` | $P_m = P$ (Pass-through). Logs warnings if surface tilt exceeds `max_3axis_tilt_deg`. |
 | `generic_chain` | **Parallel test solver**: the axes are described mathematically in the machine file's `chain` (joint directions and points in the zero pose, who carries whom, signs, limits, continuous C; product of exponentials, closed-form IK for up to two rotary joints). Gives the same G-code as the three solvers above for the shipped `config/machines_experimental/chain_*.json (copy one into config/machines to see it in the GUI)`; the others stay untouched. Details, status (ABC model, 6 axis / A axis in progress): `docs/KINEMATICS.md`. |
 
+## G-code checker (`src/common/gcode_check.py`, tab "5. G-Code Check" in `src/gui_check.py`)
+
+Reads G-code back (G0/G1, X Y Z A B C, F, E, `;LAYER:`, `; TYPE:`; G90/G91; arcs are skipped with a warning) and reconstructs what the firmware
+does: every move is cut into steps of <= 2 deg in axis space (all axes linear, C by the SHORTEST angle like Klipper's `shortest_path` in G90, the
+firmware position carried on unwrapped), and each step goes through the selected machine's solver inverse (`to_part_batch`) to the part frame - so
+it works for every machine, A axis included. Per move it reports the `deviation` (max distance of the interpolated path from the straight chord
+between the two G-code points: an arc where a line should be, e.g. C swinging 180 deg at B ~ 0), the C turn, and the time from the firmware's
+6D length (`sqrt(dx^2+dy^2+dz^2+dA^2+dB^2+dC^2)` / F) next to the XYZ-only time. The tab draws the part (or machine) path centred, playable, per layer,
+deviating moves red. The machine must be the one the G-code was made for (a warning says so for rotary words on a 3-axis machine).
+
 ## User Interfaces
 
 | Interface | Command | Description |
