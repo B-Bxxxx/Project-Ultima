@@ -117,5 +117,6 @@ Now (`base.resolve_branches`, same in `generic_chain`):
   gives B = 0 and C held; `tool_alignment` (cos of the real deviation) corrects the extrusion in Stage 4.
 * **Gradual C** (`refine._unwind`): a segment that still deviates after splitting (flip unavoidable) is replaced by steps of <= 5 deg of rotation while the
   tip is kept on the straight part line; the extrusion is shared between the steps. Slow (the firmware time is the 6D length / F) but the line is straight.
+The dead zone has hysteresis (`DEAD_ZONE_HYSTERESIS` = 1.5 in `base.py`): entered below the dead-zone tilt, left only above 1.5 times that. Without it a tilt that wobbles around the threshold (cylinder + Rounded ridge kx=ky=0.3, R=7, T=12: tilt 1.7..2.4 deg) crossed it 8 times per ring and every exit turned C on the spot (`_unwind`, E ~ 0): 886 such moves / 590 mm, now 287 / 77 mm (no outer walls).
 Measured on the real rounded_ridge pipeline: C turns > 90 deg 936 -> 0, max deviation 15.0 -> 0.02 mm, firmware time 145 -> 30 min.
 A side effect: with `b_axis_dir = -1` and one-sided limits the old solvers no longer clamp B to 0 (they take the other form).

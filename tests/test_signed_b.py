@@ -83,3 +83,18 @@ def test_extrusion_is_not_lost_when_a_segment_is_unwound():
     tr = ridge()
     res = solve_refined(solver, tr, cfg)
     assert len(res.states) > len(tr.waypoints)
+
+
+def test_dead_zone_hysteresis_keeps_the_head_still_on_a_wobbling_tilt():
+    """A tilt that oscillates around the dead-zone threshold (rounded ridge, near-vertical layers) must not make C turn on the spot."""
+    from src.stage3_kinematics.base import resolve_branches
+    n = 64
+    phi = np.linspace(0, 2 * np.pi, n)
+    tilt = 2.05 - 0.35 * np.cos(4 * phi)                              # 1.7 .. 2.4 deg, four periods around the ring
+    wps = [wp(0, 0, 0, [0, 0, 1], travel=(k == 0)) for k in range(n)]
+    b, c = resolve_branches(phi, tilt, wps, -90.0, 90.0, -1e6, 1e6, dead_zone_deg=2.0)
+    assert max(abs(x) for x in b[1:]) == 0.0 and max(abs(x - c[0]) for x in c) == 0.0      # (the first point of a chain is real) stays in the zone, C held
+    b2, c2 = resolve_branches(phi, tilt + 2.0, wps, -90.0, 90.0, -1e6, 1e6, dead_zone_deg=2.0)
+    assert min(abs(x) for x in b2[1:]) > 3.6                         # a real tilt (> leave threshold 3 deg) is followed
+    b3, _ = resolve_branches(phi, tilt, wps, -90.0, 90.0, -1e6, 1e6, dead_zone_deg=0.0)
+    assert min(abs(x) for x in b3[1:]) > 1.6                         # without a dead zone nothing is held
