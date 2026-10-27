@@ -98,3 +98,17 @@ def test_dead_zone_hysteresis_keeps_the_head_still_on_a_wobbling_tilt():
     assert min(abs(x) for x in b2[1:]) > 3.6                         # a real tilt (> leave threshold 3 deg) is followed
     b3, _ = resolve_branches(phi, tilt, wps, -90.0, 90.0, -1e6, 1e6, dead_zone_deg=0.0)
     assert min(abs(x) for x in b3[1:]) > 1.6                         # without a dead zone nothing is held
+
+
+def test_c_is_turned_gradually_inside_the_dead_zone_instead_of_jumping_on_the_exit():
+    """In the dead zone the nozzle is vertical, so C turns there, spread along the path, towards the angle the exit point needs."""
+    from src.stage3_kinematics.base import resolve_branches
+    k = 8
+    wps = [wp(2.0 * i, 0, 0, [0, 0, 1], travel=(i == 0)) for i in range(k)]
+    tilt = [1.0] * (k - 1) + [6.0]                                      # held, held ..., then a real tilt
+    az = np.radians([0.0] * (k - 1) + [90.0])
+    b, c = resolve_branches(az, tilt, wps, -90.0, 90.0, -1e6, 1e6, dead_zone_deg=2.0)
+    assert b[1:k - 1] == [0.0] * (k - 2) and b[-1] == pytest.approx(6.0)
+    assert c[-1] == pytest.approx(90.0) and c[0] == pytest.approx(0.0)
+    steps = np.diff(c)
+    assert np.all(steps > 0) and steps.max() < 90.0 / (k - 1) + 1e-6      # uniform ramp, no jump on the exit

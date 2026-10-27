@@ -79,6 +79,7 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
     hold = max(hold_b_deg, dead_zone_deg)
     leave = hold * DEAD_ZONE_HYSTERESIS if dead_zone_deg > 0.0 else hold      # the dead zone is left only above this tilt
     in_zone = False
+    held = []                                       # True where the point sits in the dead zone (B = 0, C held)
     eps = 1e-9
     out_b, out_c = [], []
     prev_c = prev_b = 0.0
@@ -96,8 +97,10 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
         if out_c and abs(b) < (leave if in_zone else hold):
             c, bb = prev_c, (0.0 if dead_zone_deg > 0.0 else b)
             in_zone = True
+            held.append(True)
         else:
             in_zone = False
+            held.append(False)
             base = float(np.degrees(r))
             ok1 = b_lo - eps <= b <= b_hi + eps               # the canonical form (B, C) / the flipped form (-B, C + 180)
             ok2 = b_lo - eps <= -b <= b_hi + eps
@@ -123,7 +126,39 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
     if clipped:
         logging.getLogger(__name__).warning("C axis: a chain needs more rotation than the C limits allow (%g..%g deg); "
                                             "the C angle was clamped, the part will be wrong there", c_lo, c_hi)
+    if dead_zone_deg > 0.0:
+        _ramp_c_in_dead_zone(out_c, held, waypoints, c_lo, c_hi)
     return out_b, out_c
+
+
+def _ramp_c_in_dead_zone(out_c, held, waypoints, c_lo, c_hi):
+    """
+    Inside the dead zone the nozzle is vertical (B = 0), so C does not matter: it is turned there, gradually along the path, from the
+    held angle to the angle the next point outside the zone needs. The head then never has to turn on the spot when it leaves the
+    zone (the old jump, spread by refine._unwind into stationary steps with almost no extrusion). In place, C only.
+    """
+    n = len(out_c)
+    k = 1
+    while k < n:
+        if not held[k]:
+            k += 1
+            continue
+        i = k                                           # run of held points i .. j-1, left by point j
+        while k < n and held[k]:
+            k += 1
+        j = k
+        if j >= n or any(getattr(waypoints[m], "is_travel_move", False) for m in range(i, j + 1)):
+            continue                                    # the run ends the chain / contains a travel: nothing to join
+        c0, c1 = out_c[i - 1], out_c[j]
+        if abs(c1 - c0) < 1e-9:
+            continue
+        pts = np.array([[waypoints[m].x, waypoints[m].y, waypoints[m].z] for m in range(i - 1, j + 1)], float)
+        s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
+        if s[-1] < 1e-9:
+            continue
+        for m in range(i, j):
+            c = c0 + (c1 - c0) * s[m - i + 1] / s[-1]
+            out_c[m] = min(max(c, c_lo), c_hi)
 
 
 class BaseKinematicSolver(ABC):
