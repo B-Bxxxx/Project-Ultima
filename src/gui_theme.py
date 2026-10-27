@@ -104,3 +104,24 @@ def stylesheet() -> str:
     values = dict(BG=BG, PANEL=PANEL, FIELD=FIELD, LINE=LINE, TEXT=TEXT, MUTED=MUTED, CORAL=CORAL, AMBER=AMBER,
                   UP=arrows["up"], DOWN=arrows["down"])
     return _TEMPLATE.format(**values)
+
+
+def logo_path() -> str:
+    import os
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.svg")
+
+
+def logo_pixmap(size: int):
+    """The ULTIMA logo rendered at size x size px on a transparent background (None if it cannot be loaded)."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage, QPainter, QPixmap
+    from PyQt6.QtSvg import QSvgRenderer
+    r = QSvgRenderer(logo_path())
+    if not r.isValid():
+        return None
+    img = QImage(size, size, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    r.render(p)
+    p.end()
+    return QPixmap.fromImage(img)
