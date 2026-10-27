@@ -278,17 +278,7 @@ class MainWindow(QMainWindow):
         brand.setObjectName("brand")
         sub = QLabel("non-planar CAM")
         sub.setObjectName("brandSub")
-        brand_row = QHBoxLayout()
-        brand_row.setContentsMargins(6, 0, 0, 0)
-        _mark = gui_theme.logo_pixmap(56)
-        if _mark is not None:
-            mark = QLabel()
-            mark.setPixmap(_mark.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            mark.setFixedSize(44, 44)
-            brand_row.addWidget(mark)
-        brand_row.addWidget(brand)
-        brand_row.addStretch(1)
-        left_outer.addLayout(brand_row)
+        left_outer.addWidget(brand)
         left_outer.addWidget(sub)
 
         scroll = QScrollArea()
