@@ -121,3 +121,21 @@ def test_place_mesh_z_offset_only_applies_without_drop_to_bed():
     assert out.bounds[:, 2].tolist() == pytest.approx([2.0, 12.0])
     out = place_mesh(box, drop_to_bed=True, offset_z=7.0)     # dropping wins
     assert out.bounds[0, 2] == pytest.approx(0.0)
+
+
+def test_playback_slow_speeds_accumulate_fractional_steps():
+    pb = Playback()
+    pb.reset(900, show_all=False)                       # base step 3
+    pb.speed = 0.25
+    pb.toggle()
+    got = []
+    for _ in range(8):
+        pb.advance()
+        got.append(pb.shown)
+    assert got[-1] == 6 and got == sorted(got)           # 0.75 / tick: 0, 1, 2, 3 ... carried over, never stuck
+    pb.reset(900, show_all=False)
+    pb.speed = 0.5
+    pb.toggle()
+    for _ in range(10):
+        pb.advance()
+    assert pb.shown == 15

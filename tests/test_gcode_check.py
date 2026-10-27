@@ -114,9 +114,10 @@ def test_check_tab_loads_and_draws():
     tab.check_generated()
     assert tab.rc is not None and "moves" in tab.txt.toPlainText()
     tab.cmb_frame.setCurrentIndex(1)
-    tab.layer.setValue(0)
+    a, b = tab.sample_range(0, tab.layer_total() - 1)
+    tab.render(0, tab.layer_total() - 1, a, b - a, {"outer_wall", "infill", "travel"})
     app.processEvents()
-    assert tab._items
+    assert tab._items or tab._base[1]
 
 
 def test_table_map_is_the_inverse_of_the_part_map():

@@ -253,6 +253,10 @@ class MainWindow(QMainWindow):
         self.function_combo.currentTextChanged.connect(self._schedule_check)
         self.machine_combo.currentTextChanged.connect(self._schedule_check)
         self.update_transition_advice()
+        self._panel_for_check = False
+        self.btn_step_back.setEnabled(False)
+        self.btn_step_fwd.setEnabled(False)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
     # ------------------------------------------------------------------------------- UI
     def init_ui(self):
@@ -330,6 +334,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.txt_gcode, "4. G-Code Preview")
         self.check_tab = CheckTab(self._check_machine, lambda: self.gcode)
         self.tabs.addTab(self.check_tab, "5. G-Code Check")
+        self.check_tab.loaded.connect(self._on_tab_changed_after_load)
+        self.check_tab.settings_changed.connect(self._refresh_paths)
         right_lay.addWidget(self.tabs, 1)
 
         self.lbl_status = QLabel("-")
@@ -642,11 +648,20 @@ class MainWindow(QMainWindow):
         self.btn_play = QPushButton("▶ Play")
         self.btn_play.clicked.connect(self.toggle_play)
         self.speed_combo = QComboBox()
-        self.speed_combo.addItems(["1x", "2x", "5x", "10x", "25x"])
+        self.speed_combo.addItems(["0.25x", "0.5x", "1x", "2x", "5x", "10x", "25x"])
+        self.speed_combo.setCurrentIndex(2)
         self.speed_combo.currentIndexChanged.connect(self.on_speed_changed)
         rl.addWidget(self.btn_play)
         rl.addWidget(self.speed_combo)
-        f.addRow("Playback (last layer):", row)
+        self.btn_step_back = QPushButton("◀ Line")
+        self.btn_step_back.setToolTip("G-code check tab: one G-code line back")
+        self.btn_step_fwd = QPushButton("Line ▶")
+        self.btn_step_fwd.setToolTip("G-code check tab: one G-code line forward")
+        self.btn_step_back.clicked.connect(lambda: self.step_gcode(-1))
+        self.btn_step_fwd.clicked.connect(lambda: self.step_gcode(1))
+        rl.addWidget(self.btn_step_back)
+        rl.addWidget(self.btn_step_fwd)
+        f.addRow("Playback:", row)
         f.addRow(self.play_slider)
 
     # ------------------------------------------------------------------ project (settings) file
@@ -1283,7 +1298,14 @@ class MainWindow(QMainWindow):
             s.blockSignals(False)
         self._recompute_ranges(reset_playback=True)
 
+    def _check_active(self) -> bool:
+        """True while the G-code check tab is the visible one and holds a G-code: the panel then drives that viewer."""
+        tabs, chk = getattr(self, "tabs", None), getattr(self, "check_tab", None)
+        return bool(tabs is not None and chk is not None and tabs.currentWidget() is chk and chk.has_data())
+
     def _layer_total(self) -> int:
+        if self._check_active():
+            return self.check_tab.layer_total()
         if self.stage2_traj is not None:
             return layer_count(self.stage2_traj.waypoints)
         if self.stage1_model is not None and self.stage1_model.layers:
@@ -1298,6 +1320,8 @@ class MainWindow(QMainWindow):
 
     def _stage_items(self):
         out = {}
+        if self._check_active():
+            return out
         if self.stage2_traj is not None:
             out["stage2"] = self.stage2_traj.waypoints
         if self.stage3_traj is not None:
@@ -1309,11 +1333,13 @@ class MainWindow(QMainWindow):
         n = self._layer_total()
         self.lbl_layers.setText(f"Layers {lo + 1}..{hi + 1} of {n}" if n else "Layers: -")
         self._ranges = {k: move_range(items, lo, hi) for k, items in self._stage_items().items()}
-        # playback only runs through the LAST visible layer; the layers below it are always drawn complete
-        self._last_layer = {k: move_range(items, hi, hi) for k, items in self._stage_items().items()}
         total = 0
-        if "stage2" in self._last_layer:
-            a, b = self._last_layer["stage2"]
+        if self._check_active():
+            a, b = self.check_tab.sample_range(lo, hi)
+            self._check_range = (a, b)
+            total = b - a
+        elif "stage2" in self._ranges:
+            a, b = self._ranges["stage2"]
             total = b - a
         if reset_playback:
             self._stop_timer()
@@ -1338,8 +1364,32 @@ class MainWindow(QMainWindow):
         self.playback.shown = value
         self._refresh_paths()
 
+    def step_gcode(self, direction: int):
+        """One G-code line forward / back in the G-code check viewer (the playback head moves by one move)."""
+        if not self._check_active():
+            return
+        self._stop_timer()
+        a, b = getattr(self, "_check_range", (0, 0))
+        self.playback.shown = self.check_tab.step(a, b, self.playback.shown, direction)
+        self._sync_play_slider()
+        self._refresh_paths()
+
+    def _on_tab_changed_after_load(self):
+        self._panel_for_check = None                 # a new G-code: the panel always re-reads the layer count
+        self._on_tab_changed()
+
+    def _on_tab_changed(self, *_):
+        """The panel belongs to the visible viewer: switching to / from the G-code check re-reads the layer range and playback."""
+        check = self._check_active()
+        if check != getattr(self, "_panel_for_check", False):
+            self._panel_for_check = check
+            self._setup_view_controls()
+        self.btn_step_back.setEnabled(check)
+        self.btn_step_fwd.setEnabled(check)
+        self._refresh_paths()
+
     def on_speed_changed(self, _):
-        self.playback.speed = int(self.speed_combo.currentText().rstrip("x"))
+        self.playback.speed = float(self.speed_combo.currentText().rstrip("x"))
 
     def toggle_play(self):
         if self.playback.total <= 0:
@@ -1515,6 +1565,14 @@ class MainWindow(QMainWindow):
         self._refresh_paths()
 
     def _refresh_paths(self, *_):
+        if self._check_active():
+            lo, hi = self._layers()
+            a, b = getattr(self, "_check_range", (0, 0))
+            vis = {k for k, chk in self.feature_checks.items() if chk.isChecked()}
+            self.check_tab.render(lo, hi, a, min(self.playback.shown, b - a), vis)
+            n = self._layer_total()
+            self.lbl_status.setText(f"G-code check: layers {lo + 1}..{hi + 1} of {n}")
+            return
         for w, item in self._dynamic:
             w.removeItem(item)
         self._dynamic = []
@@ -1539,7 +1597,7 @@ class MainWindow(QMainWindow):
                 items = self._stage_items().get(key)
                 if items is None:
                     continue
-                start, stop = getattr(self, "_last_layer", {}).get(key, (0, 0))
+                start, stop = self._ranges.get(key, (0, 0))
                 shown = min(self.playback.shown, stop - start)
                 groups = group_lines_by_feature(items, vis, hi + 1, layer_min=lo, move_limit=start + shown)
                 for st in FEATURE_STYLES:

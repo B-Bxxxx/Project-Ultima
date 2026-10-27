@@ -33,12 +33,14 @@ class Playback:
     total: int = 0
     shown: int = 0
     playing: bool = False
-    speed: int = 1                    # multiplier of the base step
+    speed: float = 1.0                # multiplier of the base step (0.25 / 0.5 / 1 / 2 ...)
+    _frac: float = 0.0                # fractional steps carried over between ticks (slow speeds)
 
     def reset(self, total: int, show_all: bool = True) -> None:
         self.total = max(0, total)
         self.shown = self.total if show_all else 0
         self.playing = False
+        self._frac = 0.0
 
     @property
     def base_step(self) -> int:
@@ -48,7 +50,10 @@ class Playback:
         """One timer tick. Returns False (and stops) when the end is reached."""
         if not self.playing:
             return False
-        self.shown = min(self.total, self.shown + self.base_step * max(1, self.speed))
+        inc = self.base_step * max(self.speed, 0.01) + self._frac
+        n = int(inc)
+        self._frac = inc - n
+        self.shown = min(self.total, self.shown + n)
         if self.shown >= self.total:
             self.playing = False
             return False

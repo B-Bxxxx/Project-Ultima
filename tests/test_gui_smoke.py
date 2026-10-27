@@ -227,21 +227,34 @@ def test_end_block_uses_the_lift_and_thickness_model_follows_the_machine(win):
     assert win.profile.thickness_model == "stage1"
 
 
-def test_playback_runs_through_the_last_layer_only(win):
-    """The G-code check slider covers one layer (the last, or the chosen one); the layers below stay complete."""
-    gcode = "\n".join(
+def _gcode3():
+    return "\n".join(
         [f";LAYER:{L}\n; TYPE: outer_wall\n" + "\n".join(f"G1 X{10 + k} Y{L} Z{L * 0.2 + 0.2} E0.1 F1500" for k in range(5)) for L in range(3)])
+
+
+def test_one_panel_drives_the_gcode_check_viewer(win):
+    """Layer range, playback and line stepping of the G-code check tab come from the main panel."""
     tab = win.check_tab
-    tab.load_text(gcode, "t")
-    n = len(tab._layer_arr)
-    lo, hi = tab._play
-    assert hi == n and hi - lo == tab.slider.maximum() and tab.slider.maximum() < n // 2
-    assert set(tab._layer_arr[lo:hi]) == {2}
-    base_key = tab._base[0]
-    tab.slider.setValue(2)
-    assert tab._base[0] == base_key                      # moving the slider does not rebuild the completed layers
-    tab.layer.setValue(1)
-    assert tab.slider.maximum() == int((tab._layer_arr == 1).sum())
+    tab.load_text(_gcode3(), "t")
+    win.tabs.setCurrentWidget(tab)
+    assert win._check_active() and win.layer_hi.maximum() == 3 and win.btn_step_fwd.isEnabled()
+    n = len(tab._layer_arr) - 1
+    assert win.playback.total == n and win.play_slider.maximum() == n          # the whole selected range
+    win.layer_lo.setValue(2)                                                  # layers 2..3 only
+    assert win.playback.total == int((tab._layer_arr >= 1).sum())
+    a, b = win._check_range
+    win.play_slider.setValue(0)
+    win.step_gcode(1)
+    assert win.playback.shown >= 1 and tab.rc.move_of_point[a + win.playback.shown - 1] == tab.rc.move_of_point[a]
+    first = win.playback.shown
+    win.step_gcode(1)
+    assert tab.rc.move_of_point[a + win.playback.shown - 1] == tab.rc.move_of_point[a] + 1
+    win.step_gcode(-1)
+    assert win.playback.shown == first
+    win.step_gcode(-1)
+    assert win.playback.shown == 0
+    win.tabs.setCurrentIndex(0)                                               # back to the pipeline viewers
+    assert not win._check_active() and not win.btn_step_fwd.isEnabled()
 
 
 def test_check_tab_machine_motion_view(win):
@@ -252,11 +265,12 @@ def test_check_tab_machine_motion_view(win):
         f"G1 X{100 + k} Y{100 - k} Z1 B{90 + 5 * k} C{20 * k} E0.1 F1500" for k in range(1, 12))
     tab = win.check_tab
     tab.load_text(gcode, "t")
+    win.tabs.setCurrentWidget(tab)
     tab.cmb_frame.setCurrentIndex(2)
     cam = (tab.view.opts["distance"], tuple(tab.view.opts["center"]))
-    tab.slider.setValue(tab.slider.maximum() // 3)
-    first = [np.array(i.pos).copy() for i in tab._items if hasattr(i, "pos") and getattr(i, "pos", None) is not None]
-    tab.slider.setValue(tab.slider.maximum())
-    last = [np.array(i.pos).copy() for i in tab._items if hasattr(i, "pos") and getattr(i, "pos", None) is not None]
+    win.play_slider.setValue(win.play_slider.maximum() // 3)
+    first = [np.array(i.pos).copy() for i in tab._items if getattr(i, "pos", None) is not None]
+    win.play_slider.setValue(win.play_slider.maximum())
+    last = [np.array(i.pos).copy() for i in tab._items if getattr(i, "pos", None) is not None]
     assert first and last and (tab.view.opts["distance"], tuple(tab.view.opts["center"])) == cam
     assert any(a.shape == b.shape and not np.allclose(a, b) for a, b in zip(first[-4:], last[-4:]))

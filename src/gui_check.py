@@ -1,6 +1,10 @@
 """
 "5. G-Code Check" tab: reads G-code back and draws the path the firmware really takes over the PART (or the machine),
-re-centred, playable, with the moves that deviate from their straight line marked red. Logic: src/common/gcode_check.py.
+re-centred, with the moves that deviate from their straight line marked red. Logic: src/common/gcode_check.py.
+
+The layer range, the feature filter, the playback (slider, speed, play, step) are NOT here: the one control panel of the main window
+drives every viewer. This tab only offers what is specific to a G-code check (file, frame, tolerance) and draws what the panel asks
+for: `render(lo, hi, a, shown, vis)`.
 """
 import os
 from typing import Callable, Optional
@@ -8,19 +12,23 @@ from typing import Callable, Optional
 import numpy as np
 import pyqtgraph.opengl as gl
 from pyqtgraph import Vector
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit,
-                             QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget)
+                             QPushButton, QVBoxLayout, QWidget)
 
 from src import gui_theme
 from src.common.feature_styles import FEATURE_STYLES
 from src.common.gcode_check import Reconstruction, parse_gcode, reconstruct, table_map
 
 BAD_COLOR = (1.0, 0.15, 0.15, 1.0)
+KNOWN = {s.key for s in FEATURE_STYLES}
 
 
 class CheckTab(QWidget):
     """`machine_provider()` returns (solver, MachineConfig, MachineSpec) of the selected machine; `gcode_provider()` the last G-code."""
+
+    loaded = pyqtSignal()                    # a new G-code was read (the panel re-reads the layer count)
+    settings_changed = pyqtSignal()          # frame / tolerance / marking changed (the panel asks for a redraw)
 
     def __init__(self, machine_provider: Callable, gcode_provider: Callable[[], Optional[str]], parent=None):
         super().__init__(parent)
@@ -28,7 +36,9 @@ class CheckTab(QWidget):
         self.rc: Optional[Reconstruction] = None
         self.title = ""
         self._items = []
-        self._base = None                    # (key, item): the complete layers below the playing layer, rebuilt only when the key changes
+        self._base = None                    # (key, items): the complete layers below the head's layer, rebuilt only when the key changes
+        self._args = None                    # the last render(...) request
+        self._warns = []
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
@@ -39,12 +49,9 @@ class CheckTab(QWidget):
         self.cmb_frame = QComboBox()
         self.cmb_frame.addItems(["Part (path on the part)", "Machine (axis positions)", "Machine motion (fixed view, table moves)"])
         self.cmb_frame.currentIndexChanged.connect(self._frame_changed)
-        self.chk_travel = QCheckBox("Travel")
-        self.chk_travel.setChecked(True)
-        self.chk_travel.toggled.connect(self.redraw)
         self.chk_bad = QCheckBox("Mark deviating moves")
         self.chk_bad.setChecked(True)
-        self.chk_bad.toggled.connect(self.redraw)
+        self.chk_bad.toggled.connect(self._changed)
         self.tol = QDoubleSpinBox()
         self.tol.setRange(0.001, 10.0)
         self.tol.setDecimals(3)
@@ -52,13 +59,7 @@ class CheckTab(QWidget):
         self.tol.setValue(0.05)
         self.tol.setSuffix(" mm")
         self.tol.valueChanged.connect(self._tolerance_changed)
-        self.layer = QSpinBox()
-        self.layer.setSpecialValueText("all layers")
-        self.layer.setRange(-1, 0)
-        self.layer.setValue(-1)
-        self.layer.valueChanged.connect(self._layer_changed)
-        for w in (self.btn_check, self.btn_open, self.cmb_frame, self.chk_travel, self.chk_bad, QLabel("tol."), self.tol,
-                  QLabel("layer"), self.layer):
+        for w in (self.btn_check, self.btn_open, self.cmb_frame, self.chk_bad, QLabel("tol."), self.tol):
             top.addWidget(w)
         top.addStretch()
         lay.addLayout(top)
@@ -68,26 +69,13 @@ class CheckTab(QWidget):
         self.view.setBackgroundColor(gui_theme.GL_BACKGROUND)
         lay.addWidget(self.view, 1)
 
-        play = QHBoxLayout()
-        self.btn_play = QPushButton("Play")
-        self.btn_play.clicked.connect(self.toggle_play)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 0)
-        self.slider.valueChanged.connect(self.redraw)
         self.lbl_pos = QLabel("")
-        play.addWidget(self.btn_play)
-        play.addWidget(self.slider, 1)
-        play.addWidget(self.lbl_pos)
-        lay.addLayout(play)
-
+        lay.addWidget(self.lbl_pos)
         self.txt = QPlainTextEdit()
         self.txt.setReadOnly(True)
         self.txt.setMaximumHeight(150)
         self.txt.setStyleSheet("font-family: monospace;")
         lay.addWidget(self.txt)
-        self.timer = QTimer(self)
-        self.timer.setInterval(30)
-        self.timer.timeout.connect(self._tick)
 
     # ------------------------------------------------------------------ loading
     def check_generated(self):
@@ -111,50 +99,62 @@ class CheckTab(QWidget):
         except Exception as e:                      # a bad file must never break the GUI
             self.rc = None
             self.txt.setPlainText(f"Error: {e}")
+            self.loaded.emit()
             return
         self.title = title
         self._solver, self._cfg = solver, cfg
         self._warns = warns
-        layers = [max(m.layer, 0) for m in self.rc.moves]
-        self.layer.blockSignals(True)
-        self.layer.setRange(-1, max(layers))
-        self.layer.setValue(-1)
-        self.layer.blockSignals(False)
-        self._items_frame = None
+        self._clear_base()
         self._rebuild_points()
-        self._play_range()
         self._summary()
         self.frame_view()
-        self.redraw()
+        self.loaded.emit()
 
-    def _play_range(self):
-        """The slider (and Play) runs through the samples of ONE layer: the chosen one, else the last; layers below are complete."""
-        la = self._layer_arr
-        target = self.layer.value() if self.layer.value() >= 0 else int(la.max())
-        idx = np.nonzero(la == target)[0]
+    # ------------------------------------------------------------------ the panel's questions
+    def has_data(self) -> bool:
+        return self.rc is not None
+
+    def layer_total(self) -> int:
+        return int(self._layer_arr.max()) + 1 if self.rc is not None else 0
+
+    def sample_range(self, lo: int, hi: int):
+        """[a, b) sample indices (the start point 0 excluded) of the layers lo..hi."""
+        if self.rc is None:
+            return 0, 0
+        idx = np.nonzero((self._layer_arr >= lo) & (self._layer_arr <= hi))[0]
         idx = idx[idx >= 1]
-        self._play = (int(idx[0]), int(idx[-1]) + 1) if len(idx) else (1, 1)
-        self.slider.blockSignals(True)
-        self.slider.setRange(0, self._play[1] - self._play[0])
-        self.slider.setValue(self._play[1] - self._play[0])
-        self.slider.blockSignals(False)
+        return (int(idx[0]), int(idx[-1]) + 1) if len(idx) else (0, 0)
 
+    def step(self, a: int, b: int, shown: int, direction: int) -> int:
+        """`shown` after stepping the head by one G-code line (one move) forward (+1) or back (-1) inside the samples [a, b)."""
+        if self.rc is None or b <= a:
+            return shown
+        mop = self.rc.move_of_point
+        head = a + shown - 1
+        cur = int(mop[head]) if shown > 0 else int(mop[a]) - 1
+        tgt = cur + (1 if direction > 0 else -1)
+        if tgt < int(mop[a]):
+            return 0
+        last = np.nonzero(mop[a:b] == tgt)[0]
+        if not len(last):
+            return b - a if direction > 0 else 0
+        return int(last[-1]) + 1
+
+    # ------------------------------------------------------------------ settings of this tab
     def _frame_changed(self, *_):
         if self.rc is not None:
             self._clear_base()
             self.frame_view()
-        self.redraw()
+        self.settings_changed.emit()
 
-    def _layer_changed(self, *_):
-        if self.rc is not None:
-            self._play_range()
-        self.redraw()
+    def _changed(self, *_):
+        self.settings_changed.emit()
 
     def _tolerance_changed(self, *_):
         if self.rc is not None:
             self._rebuild_points()
             self._summary()
-            self.redraw()
+        self.settings_changed.emit()
 
     # ------------------------------------------------------------------ data for drawing
     def _rebuild_points(self):
@@ -204,19 +204,17 @@ class CheckTab(QWidget):
         part = self.rc.part
         return float(max(np.ptp(part[:, 0]), np.ptp(part[:, 1]), 20.0)) * 0.75 + 10.0
 
-    def _redraw_motion(self, stop: int):
+    def _redraw_motion(self, a: int, stop: int, vis):
         """Fixed camera, machine frame: the nozzle stays on its axis line, the table (and the part printed so far) tilts and turns."""
         rc = self.rc
         k = max(stop - 1, 0)
         pose = rc.poses[k]
         M, t = table_map(self._solver, self._cfg, pose)
-        p0 = self._play[0]
-        # deposited samples: everything up to the head (complete layers below + the playing layer); thinned to keep drawing fast
-        idx = np.arange(1, max(stop, 1))
-        feat = self._feat_arr[idx] if len(idx) else idx
-        keep = (feat != "travel") if len(idx) else np.zeros(0, bool)
-        if self.layer.value() >= 0:
-            keep &= self._layer_arr[idx] == self.layer.value()
+        idx = np.arange(max(a, 1), max(stop, 1))
+        keep = np.zeros(len(idx), bool)
+        if len(idx):
+            feat = self._feat_arr[idx]
+            keep = (feat != "travel") & (np.isin(feat, list(vis)) | ~np.isin(feat, list(KNOWN)))
         idx = idx[keep]
         stride = max(1, len(idx) // 25000)
         idx = idx[::stride]
@@ -254,22 +252,22 @@ class CheckTab(QWidget):
             self.lbl_pos.setText(f"line {mv.line} | layer {mv.layer} | {mv.feature} | machine X{pose[0]:.2f} Y{pose[1]:.2f} Z{pose[2]:.2f} "
                                  f"A{pose[3]:.1f} B{pose[4]:.1f} C{pose[5]:.1f}")
 
-    def redraw(self, *_):
+    def render(self, lo: int, hi: int, a: int, shown: int, vis):
+        """Draws the samples [a, a + shown) of the layers lo..hi; `vis` = the feature keys the panel shows."""
+        self._args = (lo, hi, a, shown, frozenset(vis))
         if self.rc is None:
             return
         for it in self._items:
             self.view.removeItem(it)
         self._items = []
         rc = self.rc
+        stop = min(a + shown, len(rc.part))
         if self.cmb_frame.currentIndex() == 2:
             self._clear_base()
-            self._redraw_motion(min(self._play[0] + self.slider.value(), len(rc.part)))
+            self._redraw_motion(a, stop, vis)
             return
         P = rc.part if self.cmb_frame.currentIndex() == 0 else rc.machine
-        m = len(P)
-        p0, p1 = self._play
-        stop = min(p0 + self.slider.value(), m)
-        layer = self.layer.value()
+        mark = self.chk_bad.isChecked()
 
         def add(idx, sel, color):
             ii = idx[sel]
@@ -282,32 +280,30 @@ class CheckTab(QWidget):
             return it
 
         def draw(idx):
-            """Items of the samples `idx` (feature colours, deviating moves red); returns the created items."""
             if not len(idx):
                 return []
-            ok = np.ones(len(idx), bool)
-            if layer >= 0:
-                ok &= self._layer_arr[idx] == layer
-            trav = self._feat_arr[idx] == "travel"
-            if not self.chk_travel.isChecked():
-                ok &= ~trav
-            bad = self._bad_arr[idx] & self.chk_bad.isChecked()
+            feat = self._feat_arr[idx]
+            known = np.isin(feat, list(KNOWN))
+            shown_f = np.isin(feat, list(vis)) | ~known
+            bad = self._bad_arr[idx] & mark
             out = []
             for st in FEATURE_STYLES:
-                out.append(add(idx, ok & ~bad & (self._feat_arr[idx] == st.key), st.color))
-            known = {s.key for s in FEATURE_STYLES}
-            out.append(add(idx, ok & ~bad & ~np.isin(self._feat_arr[idx], list(known)), (0.8, 0.8, 0.8, 1.0)))
-            out.append(add(idx, ok & bad, BAD_COLOR))
+                out.append(add(idx, shown_f & ~bad & (feat == st.key), st.color))
+            out.append(add(idx, shown_f & ~bad & ~known, (0.8, 0.8, 0.8, 1.0)))
+            out.append(add(idx, shown_f & bad, BAD_COLOR))
             return [o for o in out if o is not None]
 
-        # complete layers below the playing layer: cached, rebuilt only when the view settings change
-        key = (id(rc), self.cmb_frame.currentIndex(), self.chk_travel.isChecked(), self.chk_bad.isChecked(),
-               self.tol.value(), layer, p0)
+        head_layer = int(self._layer_arr[stop - 1]) if stop > a else None
+        idx = np.arange(max(a, 1), max(stop, 1))
+        below = idx[self._layer_arr[idx] < head_layer] if head_layer is not None and len(idx) else idx[:0]
+        now = idx[self._layer_arr[idx] >= head_layer] if head_layer is not None and len(idx) else idx[:0]
+        # complete layers below the head's layer: cached, rebuilt only when the view settings change
+        key = (id(rc), self.cmb_frame.currentIndex(), mark, self.tol.value(), a, head_layer, frozenset(vis))
         if self._base is None or self._base[0] != key:
             self._clear_base()
-            self._base = (key, draw(np.arange(1, p0)))
-        self._items = draw(np.arange(p0, stop))
-        if stop > 0:
+            self._base = (key, draw(below))
+        self._items = draw(now)
+        if stop > a:
             head = gl.GLScatterPlotItem(pos=P[stop - 1:stop].astype(np.float32), size=10, color=(1, 1, 1, 1))
             self.view.addItem(head)
             self._items.append(head)
@@ -316,21 +312,10 @@ class CheckTab(QWidget):
                 mv = rc.moves[mi]
                 self.lbl_pos.setText(f"line {mv.line} | layer {mv.layer} | {mv.feature} | "
                                      f"X{mv.p1[0]:.2f} Y{mv.p1[1]:.2f} Z{mv.p1[2]:.2f} A{mv.p1[3]:.1f} B{mv.p1[4]:.1f} C{mv.p1[5]:.1f}")
+        else:
+            self.lbl_pos.setText("")
 
-    # ------------------------------------------------------------------ playback
-    def toggle_play(self):
-        if self.timer.isActive():
-            self.timer.stop()
-            self.btn_play.setText("Play")
-            return
-        if self.slider.value() >= self.slider.maximum():
-            self.slider.setValue(0)
-        self.timer.start()
-        self.btn_play.setText("Pause")
-
-    def _tick(self):
-        step = max(1, self.slider.maximum() // 300)
-        self.slider.setValue(min(self.slider.maximum(), self.slider.value() + step))
-        if self.slider.value() >= self.slider.maximum():
-            self.timer.stop()
-            self.btn_play.setText("Play")
+    def redraw(self, *_):
+        """Repeats the last request (after a setting of this tab changed)."""
+        if self._args is not None:
+            self.render(*self._args[:4], self._args[4])
