@@ -55,6 +55,9 @@ def resolve_c_angles(raw_c_rad, b_deg, waypoints, c_min: float, c_max: float, ho
     return out
 
 
+DEAD_ZONE_HYSTERESIS = 1.5
+
+
 def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo: float, c_hi: float,
                      dead_zone_deg: float = 0.0, hold_b_deg: float = C_HOLD_B_DEG):
     """
@@ -67,10 +70,15 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
     B >= 0 and C closest to zero, as before (see resolve_c_angles).
     Dead zone: a tilt below `dead_zone_deg` is replaced by B = 0 (nozzle vertical, the azimuth is held): the nozzle axis may
     deviate that much from the surface normal (Stage 4 corrects the thickness with tool_alignment).
+    The dead zone has hysteresis (`DEAD_ZONE_HYSTERESIS`): it is entered below the dead-zone tilt but left only above 1.5 times
+    that, so a tilt that oscillates around the threshold (a rounded ridge with near-vertical layers) does not make the head turn on
+    the spot every time it crosses it.
     Returns (b_list, c_list).
     """
     import logging
     hold = max(hold_b_deg, dead_zone_deg)
+    leave = hold * DEAD_ZONE_HYSTERESIS if dead_zone_deg > 0.0 else hold      # the dead zone is left only above this tilt
+    in_zone = False
     eps = 1e-9
     out_b, out_c = [], []
     prev_c = prev_b = 0.0
@@ -85,9 +93,11 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
 
     for r, b, wp in zip(raw_c_rad, b_deg, waypoints):
         start = not out_c or getattr(wp, "is_travel_move", False)
-        if out_c and abs(b) < hold:
+        if out_c and abs(b) < (leave if in_zone else hold):
             c, bb = prev_c, (0.0 if dead_zone_deg > 0.0 else b)
+            in_zone = True
         else:
+            in_zone = False
             base = float(np.degrees(r))
             ok1 = b_lo - eps <= b <= b_hi + eps               # the canonical form (B, C) / the flipped form (-B, C + 180)
             ok2 = b_lo - eps <= -b <= b_hi + eps
