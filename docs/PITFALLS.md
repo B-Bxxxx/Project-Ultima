@@ -121,3 +121,20 @@ The dead zone has hysteresis (`DEAD_ZONE_HYSTERESIS` = 1.5 in `base.py`): entere
 **C ramp inside the dead zone** (`base._ramp_c_in_dead_zone`): B = 0 there, so C is free; it is turned along the path from the held angle to the angle the exit point needs, so the head never turns on the spot when leaving the zone. Cylinder + Rounded ridge (kx=ky=0.3, R=7, T=12): low-extrusion moves 886 -> 287 (hysteresis) -> 10, no change in deviation (0.02 mm) or time. Only an exit that follows a chain start or a travel inside the zone still needs `_unwind`.
 Measured on the real rounded_ridge pipeline: C turns > 90 deg 936 -> 0, max deviation 15.0 -> 0.02 mm, firmware time 145 -> 30 min.
 A side effect: with `b_axis_dir = -1` and one-sided limits the old solvers no longer clamp B to 0 (they take the other form).
+
+## Feed compensation (Stage 4, `feed_compensation.py`)
+The firmware's move time is L6 / F with degrees counted as mm, so a move that turns B / C while the tip hardly moves over the part crawls
+(tip speed ~1 mm/s at F = 25 mm/s; 41 % of the moves, 56 % of the time on cylinder + Rounded ridge). Stage 3 stores `part_step` (tip path over the part,
+inverse kinematics) in every state; Stage 4 raises F per extruding move to `F0 * (L6 / part_step)^s` (`feed_compensation` s, 0 = off = identical G-code),
+capped by `max_feed`, `rotary_max_speed` (deg/s) and `xyz_max_speed` (mm/s), never below F0, neighbours differing by at most `feed_ramp`. E is unchanged
+(it is per mm of path), so the extruder speed follows the tip speed. Measured on the cylinder + Rounded ridge project (kx=ky=0.3, R=7, T=12): off 235 min;
+s=1, F 6000, rotary 60 deg/s: 113 min, tip speed p1 1.5 mm/s (was 0.6); F 12000 / 120 deg/s: 79 min, p1 3.0; F 12000 / 240 deg/s: 63 min, p1 5.0.
+Not modelled: the firmware's acceleration / junction limits on the 6D vector (short moves may not reach F).
+
+## Orientation smoothing (`orientation_tolerance_deg`)
+Near the singular direction (B small) the azimuth C swings fast for a tiny change of the layer normal, so the head crawls (time = path / F in 6D).
+With `orientation_tolerance_deg` = ε > 0 the nozzle axis may deviate up to ε from the layer normal and B(s), C(s) of every move chain become the
+shortest ("taut string") curves inside that corridor (|dB| <= ε/√2, sin B·|dC| <= ε/√2 -> true axis error <= ε). Chain ends stay exact; the
+thickness error is corrected by tool_alignment in Stage 4. 0 = off (output unchanged). Project files saved before the parameter existed carry the
+old machine definition: reload the machine from its JSON to get the field. Measured on the cylinder + rounded-ridge project: moves with
+dC/mm > 30: 1870 (off) -> 1000 (ε=4) -> 744 (ε=8); Σ|dB| 35 000° -> 7 000°. The rest are chain starts/unwind steps, not touched.

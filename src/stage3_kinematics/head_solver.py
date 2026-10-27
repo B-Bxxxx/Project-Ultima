@@ -58,7 +58,7 @@ class SwivelHeadXYZBCSolver(BaseKinematicSolver):
             valid_waypoints.append(wp)
 
         b_angles, c_angles = resolve_branches(raw_c_angles, b_angles, valid_waypoints, b_min, b_max, c_min, c_max,
-                                              config.vertical_dead_zone_deg)
+                                              config.vertical_dead_zone_deg, tolerance_deg=config.orientation_tolerance_deg)
 
         for idx, wp in enumerate(valid_waypoints):
             b_deg = max(b_min, min(b_max, b_angles[idx]))

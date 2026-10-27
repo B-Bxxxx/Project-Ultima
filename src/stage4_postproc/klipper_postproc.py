@@ -8,6 +8,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from src.common.schemas import MachineStateVector, MachineTrajectory, MinimalPrintProfile
 from src.stage4_postproc.base import BasePostProcessor
+from src.stage4_postproc.feed_compensation import compensated_feeds
 
 LAYER_MARKER_RE = re.compile(r"^;LAYER:(\d+)\s*$")
 FOOTER_MARKER = "; End G-Code"
@@ -113,16 +114,17 @@ class Klipper5AxisPostProcessor(BasePostProcessor):
         for st in states:
             layer_top[st.layer_index] = max(layer_top.get(st.layer_index, st.z), st.z)
 
+        feeds = compensated_feeds(states, profile)                # = the feedrates unless the feed compensation is on
         moves: List[Dict[str, Any]] = []
         prev: Optional[MachineStateVector] = None
         last_layer: Optional[int] = None
         last_type: Optional[str] = None
 
-        for s in states:
+        for s, feed in zip(states, feeds):
             move: Dict[str, Any] = {
                 "x": s.x, "y": s.y, "z": s.z, "b": s.b, "c": s.c, "a": s.a,
                 "rot": self._rot_words(s, profile),
-                "feedrate": s.feedrate,
+                "feedrate": feed,
                 "layer_marker": s.layer_index if s.layer_index != last_layer else None,
                 "type_marker": None,
                 "kind": "travel" if s.is_travel_move else "extrude",

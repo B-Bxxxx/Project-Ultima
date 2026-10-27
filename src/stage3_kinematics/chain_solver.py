@@ -79,6 +79,7 @@ class GenericChainSolver(BaseKinematicSolver):
         return [{j2.axis: angle_about(j2.direction, E, v), j1.axis: angle_about(j1.direction, v, N)} for v in sols]
 
     dead_zone_deg = 0.0
+    tolerance_deg = 0.0
 
     def _angles(self, ch: Chain, N: np.ndarray, waypoints):
         """Final MATHEMATICAL rotary angles (deg), {axis: (n,)}: branch choice, continuity, limits."""
@@ -127,7 +128,8 @@ class GenericChainSolver(BaseKinematicSolver):
                 last = np.maximum.accumulate(np.where(~sing, np.arange(n), -1))
                 raw = np.where(last >= 0, raw[np.maximum(last, 0)], 0.0)
             tb, cb = resolve_branches(raw, tpos, waypoints, tlo, thi, clo if np.isfinite(clo) else -BIG,
-                                      chi if np.isfinite(chi) else BIG, self.dead_zone_deg)
+                                      chi if np.isfinite(chi) else BIG, self.dead_zone_deg,
+                                      tolerance_deg=self.tolerance_deg)
             out[jt.axis] = np.clip(np.array(tb), tlo, thi)
             out[jc.axis] = np.clip(np.array(cb), clo, chi)
             return out
@@ -183,6 +185,7 @@ class GenericChainSolver(BaseKinematicSolver):
         P = np.array([[w.x, w.y, w.z] for w in wps], float)
 
         self.dead_zone_deg = float(config.vertical_dead_zone_deg)
+        self.tolerance_deg = float(config.orientation_tolerance_deg)
         ang_deg = self._angles(ch, N, wps)
         rot_rad = {a: np.radians(v) for a, v in ang_deg.items()}
         lin = self._linear_solve(ch, rot_rad, P)

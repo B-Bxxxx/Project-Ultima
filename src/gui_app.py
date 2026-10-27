@@ -554,6 +554,19 @@ class MainWindow(QMainWindow):
         f.addRow(self.hop_short_chk)
         self.park_spin = self._dspin(30.0, 0.0, 500.0, 5.0, 1)
         f.addRow("End lift above part (mm):", self.park_spin)
+        self.feedcomp_spin = self._dspin(0.0, 0.0, 1.0, 0.1, 2)
+        self.feedcomp_spin.setToolTip("Rotary moves are slow (the firmware counts degrees as mm in the move length). F is raised per move to "
+                                      "F * (L6 / tip path)^s. 0 = off, 1 = the tip keeps the print speed (within the limits below).")
+        f.addRow("Feed compensation (0..1):", self.feedcomp_spin)
+        self.maxfeed_spin = self._dspin(6000.0, 100.0, 100000.0, 500.0, 0)
+        f.addRow("  max F (mm/min):", self.maxfeed_spin)
+        self.rotspeed_spin = self._dspin(60.0, 1.0, 2000.0, 10.0, 0)
+        f.addRow("  max rotary speed (deg/s):", self.rotspeed_spin)
+        self.xyzspeed_spin = self._dspin(60.0, 1.0, 1000.0, 5.0, 0)
+        f.addRow("  max XYZ speed (mm/s):", self.xyzspeed_spin)
+        self.feedramp_spin = self._dspin(0.5, 0.05, 10.0, 0.1, 2)
+        self.feedramp_spin.setToolTip("F of neighbouring extruding moves differs by at most this fraction (0.5 = 50 %).")
+        f.addRow("  F change per move (fraction):", self.feedramp_spin)
         self.overlap_spin = self._dspin(0.15, 0.0, 0.5, 0.05)
         f.addRow("Infill overlap (x nozzle):", self.overlap_spin)
         self.path_tol_spin = self._dspin(0.02, 0.0, 1.0, 0.01, 3)
@@ -699,7 +712,8 @@ class MainWindow(QMainWindow):
                         "skirt_distance": self.skirt_dist_spin, "travel_command": self.travel_cmd_combo,
                         "retract_distance": self.retract_spin, "unretract_distance": self.unretract_spin,
                         "retract_speed": self.retract_speed_spin, "unretract_speed": self.unretract_speed_spin,
-                        "z_hop": self.zhop_spin, "hop_short_travels": self.hop_short_chk, "park_lift": self.park_spin,
+                        "z_hop": self.zhop_spin, "hop_short_travels": self.hop_short_chk, "park_lift": self.park_spin, "feed_compensation": self.feedcomp_spin, "max_feed": self.maxfeed_spin,
+                        "rotary_max_speed": self.rotspeed_spin, "xyz_max_speed": self.xyzspeed_spin, "feed_ramp": self.feedramp_spin,
                         "infill_overlap": self.overlap_spin, "path_tolerance": self.path_tol_spin,
                         "infill_path_tolerance": self.infill_tol_spin, "min_segment_length": self.min_seg_spin,
                         "seam_angle_deg": self.seam_spin, "thickness_model": self.thickness_combo},
@@ -1479,6 +1493,11 @@ class MainWindow(QMainWindow):
                 rotary_axes=mspec.rotary_letters or "BC",
                 rotary_home=mspec.rotary_home(machine_cfg),
                 park_lift=self.park_spin.value(),
+                feed_compensation=self.feedcomp_spin.value(),
+                max_feed=self.maxfeed_spin.value(),
+                rotary_max_speed=self.rotspeed_spin.value(),
+                xyz_max_speed=self.xyzspeed_spin.value(),
+                feed_ramp=self.feedramp_spin.value(),
                 infill_overlap=self.overlap_spin.value(),
                 path_tolerance=self.path_tol_spin.value(),
                 infill_path_tolerance=self.infill_tol_spin.value(),
