@@ -42,6 +42,11 @@ class MinimalPrintProfile(BaseModel):
     path_angle_tolerance_deg: float = Field(1.0, ge=0.0, description="A point is also kept when the tool axis (surface normal) would turn by more than this (deg) against the line that replaces it. 0 = ignore the normals.")
     seam_angle_deg: Optional[float] = Field(90.0, description="Direction of the wall seam, seen from the part: every wall ring starts at its vertex farthest in this direction (0 = +X, 90 = +Y = back, counter-clockwise), so the seam is one line. None = keep the start point of the Stage 1 ring.")
     include_rotary_axes: bool = Field(True, description="True to output 5-axis G-code (with the rotary axes below). False for strictly 3-axis G-code.")
+    feed_compensation: float = Field(0.0, ge=0.0, le=1.0, description="Rotary moves are slow because the firmware's move length mixes mm and degrees: F is raised per move to F * (L6 / tip path)^s, s = this value (0 = off, 1 = the tip keeps the print speed), limited by max_feed, rotary_max_speed and xyz_max_speed. Only extruding moves; E is not changed.")
+    max_feed: float = Field(6000.0, gt=0.0, description="Feed compensation: the highest F (mm/min) it may write")
+    rotary_max_speed: float = Field(60.0, gt=0.0, description="Feed compensation: the highest speed (deg/s) of the fastest rotary axis in a move")
+    xyz_max_speed: float = Field(60.0, gt=0.0, description="Feed compensation: the highest speed (mm/s) of the linear axes (X Y Z vector) in a move")
+    feed_ramp: float = Field(0.5, gt=0.0, description="Feed compensation: the F of neighbouring extruding moves differs by at most this fraction (0.5 = 50 %), so the speed changes gradually")
     rotary_home: Dict[str, float] = Field(default_factory=dict, description="Machine value written for a rotary axis in the end block (default 0; B: its level-table value)")
     rotary_axes: str = Field("BC", description="Letters of the rotary axes written to the G-code when include_rotary_axes is on, in this order (A, B, C; e.g. 'BC', 'AC', 'B')")
 
@@ -194,6 +199,7 @@ class MachineStateVector(BaseModel):
     is_travel_move: bool = Field(False, description="True if this is a travel move")
     feature_type: str = Field("outer_wall", description="Type of feature")
     layer_index: int = Field(0, description="Index of the layer this state belongs to (copied unchanged from the CL waypoint)")
+    part_step: Optional[float] = Field(None, description="Distance (mm) the nozzle TIP travels on the PART from the previous state (from the solver's inverse kinematics; None = unknown). Used by the feed compensation in Stage 4.")
     tool_alignment: float = Field(1.0, description="cos of the angle between the ACTUAL nozzle axis (after axis limits / for a 3-axis machine: vertical) and the layer surface normal, in the part frame. 1.0 = nozzle along the normal.")
 
 

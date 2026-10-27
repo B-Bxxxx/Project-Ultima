@@ -130,6 +130,23 @@ def _midpoint(a: CLDataWaypoint, b: CLDataWaypoint) -> CLDataWaypoint:
                                     extrusion_volume=0.5 * b.extrusion_volume))
 
 
+def _attach_part_steps(solver, config, result: MachineTrajectory, cols: int) -> MachineTrajectory:
+    """Sets `part_step` of every state: how far the nozzle TIP travels over the PART from the previous state (inverse kinematics)."""
+    if len(result.states) < 2:
+        return result
+    try:
+        part = solver.to_part_batch(config, _poses(result, cols))
+    except Exception:                                    # the steps are only needed for the feed compensation
+        return result
+    if part is None:
+        return result
+    part = np.asarray(part, float)
+    steps = np.r_[0.0, np.linalg.norm(np.diff(part, axis=0), axis=1)]
+    for st, d in zip(result.states, steps):
+        st.part_step = float(d)
+    return result
+
+
 def solve_refined(solver: BaseKinematicSolver, trajectory: CLDataTrajectory, config: MachineConfig,
                   tolerance=None) -> MachineTrajectory:
     """solver.solve + the interpolation check / segment splitting described above (a no-op for 3-axis machines)."""
@@ -137,7 +154,7 @@ def solve_refined(solver: BaseKinematicSolver, trajectory: CLDataTrajectory, con
     cols = int(getattr(solver, "pose_columns", 5))
     result = solver.solve(trajectory, config)
     if tol <= 0.0 or len(result.states) < 2 or solver.to_part_batch(config, np.zeros((1, 5))) is None:
-        return result
+        return _attach_part_steps(solver, config, result, cols)
     wps = list(trajectory.waypoints)
     original = len(wps)
     for it in range(MAX_ITERATIONS):
@@ -170,4 +187,4 @@ def solve_refined(solver: BaseKinematicSolver, trajectory: CLDataTrajectory, con
     result = _unwind(solver, config, result, wps, cols, tol)
     if len(wps) != original:
         logger.info("Joint tolerance %.3f mm: %d -> %d points", tol, original, len(wps))
-    return result
+    return _attach_part_steps(solver, config, result, cols)
