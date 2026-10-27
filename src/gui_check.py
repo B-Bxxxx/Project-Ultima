@@ -12,7 +12,7 @@ from typing import Callable, Optional
 import numpy as np
 import pyqtgraph.opengl as gl
 from pyqtgraph import Vector
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit,
                              QPushButton, QVBoxLayout, QWidget)
 
@@ -39,6 +39,7 @@ class CheckTab(QWidget):
         self._base = None                    # (key, items): the complete layers below the head's layer, rebuilt only when the key changes
         self._args = None                    # the last render(...) request
         self._warns = []
+        self._lines = []
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
@@ -70,6 +71,9 @@ class CheckTab(QWidget):
         lay.addWidget(self.view, 1)
 
         self.lbl_pos = QLabel("")
+        self.lbl_pos.setStyleSheet("font-family: monospace;")
+        self.lbl_pos.setWordWrap(True)
+        self.lbl_pos.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(self.lbl_pos)
         self.txt = QPlainTextEdit()
         self.txt.setReadOnly(True)
@@ -104,6 +108,7 @@ class CheckTab(QWidget):
         self.title = title
         self._solver, self._cfg = solver, cfg
         self._warns = warns
+        self._lines = text.splitlines()
         self._clear_base()
         self._rebuild_points()
         self._summary()
@@ -139,6 +144,22 @@ class CheckTab(QWidget):
         if not len(last):
             return b - a if direction > 0 else 0
         return int(last[-1]) + 1
+
+    def move_info(self, mi: int) -> str:
+        """The full G-code line of move `mi` and what the firmware does with it: E, F, path on the part, 6D length, E per mm."""
+        rc = self.rc
+        mv = rc.moves[mi]
+        raw = self._lines[mv.line - 1].strip() if 0 < mv.line <= len(self._lines) else ""
+        k = np.nonzero(rc.move_of_point == mi)[0]
+        a, b = int(k[0]), int(k[-1])
+        lp = float(np.linalg.norm(np.diff(rc.part[a - 1:b + 1], axis=0), axis=1).sum())
+        d = rc.poses[b] - rc.poses[a - 1]
+        l6 = float(np.sqrt((d ** 2).sum()))
+        e_mm = f"{mv.extrusion / lp:.4f}" if lp > 1e-9 and mv.extrusion > 0 else "-"
+        rho = f"{lp / l6:.2f}" if l6 > 1e-9 else "-"
+        return (f"{raw}\n"
+                f"line {mv.line} | layer {mv.layer} | {mv.feature} | E {mv.extrusion:.5f} | F {mv.feed:.0f}\n"
+                f"path on the part {lp:.2f} mm | E per mm of path {e_mm} | firmware length (6D) {l6:.2f} | tip speed / F = {rho}")
 
     # ------------------------------------------------------------------ settings of this tab
     def _frame_changed(self, *_):
@@ -248,8 +269,7 @@ class CheckTab(QWidget):
         self._items.append(head)
         mi = int(rc.move_of_point[k])
         if mi >= 0:
-            mv = rc.moves[mi]
-            self.lbl_pos.setText(f"line {mv.line} | layer {mv.layer} | {mv.feature} | machine X{pose[0]:.2f} Y{pose[1]:.2f} Z{pose[2]:.2f} "
+            self.lbl_pos.setText(self.move_info(mi) + f"\nmachine X{pose[0]:.2f} Y{pose[1]:.2f} Z{pose[2]:.2f} "
                                  f"A{pose[3]:.1f} B{pose[4]:.1f} C{pose[5]:.1f}")
 
     def render(self, lo: int, hi: int, a: int, shown: int, vis):
@@ -309,9 +329,7 @@ class CheckTab(QWidget):
             self._items.append(head)
             mi = int(rc.move_of_point[stop - 1])
             if mi >= 0:
-                mv = rc.moves[mi]
-                self.lbl_pos.setText(f"line {mv.line} | layer {mv.layer} | {mv.feature} | "
-                                     f"X{mv.p1[0]:.2f} Y{mv.p1[1]:.2f} Z{mv.p1[2]:.2f} A{mv.p1[3]:.1f} B{mv.p1[4]:.1f} C{mv.p1[5]:.1f}")
+                self.lbl_pos.setText(self.move_info(mi))
         else:
             self.lbl_pos.setText("")
 

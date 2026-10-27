@@ -274,3 +274,12 @@ def test_check_tab_machine_motion_view(win):
     last = [np.array(i.pos).copy() for i in tab._items if getattr(i, "pos", None) is not None]
     assert first and last and (tab.view.opts["distance"], tuple(tab.view.opts["center"])) == cam
     assert any(a.shape == b.shape and not np.allclose(a, b) for a, b in zip(first[-4:], last[-4:]))
+
+
+def test_check_tab_shows_the_full_gcode_line_and_e(win):
+    tab = win.check_tab
+    tab.load_text(_gcode3(), "t")
+    win.tabs.setCurrentWidget(tab)
+    win.play_slider.setValue(3)
+    txt = tab.lbl_pos.text()
+    assert "G1 X" in txt and "E0.1" in txt and "E 0.10000" in txt and "path on the part" in txt and "tip speed / F" in txt
