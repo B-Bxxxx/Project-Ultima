@@ -166,6 +166,7 @@ class MachineConfig(BaseModel):
     c_axis_z: float = Field(0.0, description="Machine Z of the table surface at the C axis at B = 0 / of the part origin")
     eccentricity_x: float = Field(0.0, description="C-axis eccentricity X in mm")
     eccentricity_y: float = Field(0.0, description="C-axis eccentricity Y in mm")
+    orientation_tolerance_deg: float = Field(0.0, ge=0.0, description="Rotary machines: B and C may turn as little as possible while the nozzle axis stays within this angle of the layer normal (orientation smoothing; the extrusion is corrected by tool_alignment). 0 = off")
     vertical_dead_zone_deg: float = Field(0.0, ge=0.0, description="Rotary machines: a layer normal closer than this to the vertical is replaced by a vertical nozzle (B = 0, C held): fewer needless C turns near ridge crests / peaks. The nozzle axis then deviates up to this angle from the normal (the extrusion is corrected by tool_alignment). 0 = off")
     joint_tolerance: float = Field(0.02, description="Rotary machines: maximum deviation (mm, in the part frame) of the firmware's straight-line axis interpolation from the intended straight segment; longer segments are split until they are inside it. 0 = off")
     a_axis_dir: float = Field(1.0, description="Informational copy of the A joint's sign (generic_chain machines)")

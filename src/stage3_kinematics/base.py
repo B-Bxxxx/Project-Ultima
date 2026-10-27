@@ -59,7 +59,7 @@ DEAD_ZONE_HYSTERESIS = 1.5
 
 
 def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo: float, c_hi: float,
-                     dead_zone_deg: float = 0.0, hold_b_deg: float = C_HOLD_B_DEG):
+                     dead_zone_deg: float = 0.0, hold_b_deg: float = C_HOLD_B_DEG, tolerance_deg: float = 0.0):
     """
     Tilt B and azimuth C (deg) of a trajectory, given the canonical branch (B >= 0, C = azimuth) of every point.
 
@@ -73,6 +73,8 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
     The dead zone has hysteresis (`DEAD_ZONE_HYSTERESIS`): it is entered below the dead-zone tilt but left only above 1.5 times
     that, so a tilt that oscillates around the threshold (a rounded ridge with near-vertical layers) does not make the head turn on
     the spot every time it crosses it.
+    Orientation smoothing (`tolerance_deg` > 0): after the branches are chosen, B and C of every chain are replaced by the smoothest
+    curve that keeps the nozzle axis within `tolerance_deg` of the wanted direction (see `smooth_orientation`).
     Returns (b_list, c_list).
     """
     import logging
@@ -128,7 +130,78 @@ def resolve_branches(raw_c_rad, b_deg, waypoints, b_lo: float, b_hi: float, c_lo
                                             "the C angle was clamped, the part will be wrong there", c_lo, c_hi)
     if dead_zone_deg > 0.0:
         _ramp_c_in_dead_zone(out_c, held, waypoints, c_lo, c_hi)
+    if tolerance_deg > 0.0:
+        out_b, out_c = smooth_orientation(out_b, out_c, waypoints, tolerance_deg, b_lo, b_hi, c_lo, c_hi)
     return out_b, out_c
+
+
+def _taut_string(s, lo, hi):
+    """Shortest path x(s) through the corridor lo <= x <= hi (the 'taut string': piecewise linear, bends only on the corridor walls).
+    lo == hi at the first and last point pins them. Returns x at every s."""
+    n = len(s)
+    x = np.empty(n)
+    x[0] = lo[0]
+    k = 0
+    while k < n - 1:
+        ak = x[k]
+        smax_lo, i_lo = -np.inf, k + 1                  # steepest slope that still clears every lower wall seen so far
+        smin_hi, i_hi = np.inf, k + 1                   # shallowest slope that still clears every upper wall
+        nxt = None
+        for i in range(k + 1, n):
+            d = s[i] - s[k]
+            if d <= 1e-12:
+                continue
+            sl, sh = (lo[i] - ak) / d, (hi[i] - ak) / d
+            if sl > smin_hi + 1e-12:                    # a lower wall rose above the cone: bend at the upper wall point
+                nxt, val = i_hi, hi[i_hi]
+                break
+            if sh < smax_lo - 1e-12:
+                nxt, val = i_lo, lo[i_lo]
+                break
+            if sl > smax_lo:
+                smax_lo, i_lo = sl, i
+            if sh < smin_hi:
+                smin_hi, i_hi = sh, i
+        if nxt is None:                                 # reached the end: straight to the pinned last point
+            nxt, val = n - 1, lo[n - 1]
+        x[nxt] = val
+        for m in range(k + 1, nxt):
+            x[m] = ak + (val - ak) * (s[m] - s[k]) / max(s[nxt] - s[k], 1e-12)
+        k = nxt
+    return x
+
+
+def smooth_orientation(out_b, out_c, waypoints, tol_deg, b_lo, b_hi, c_lo, c_hi):
+    """
+    Orientation smoothing: inside every move chain B(s) and C(s) are replaced by the shortest ('taut string') curves that stay within a
+    corridor around the exact ones, so B and C turn as little as possible. The corridor keeps the nozzle axis within `tol_deg` of the
+    wanted direction: |dB| <= tol/sqrt2 and sin(B)|dC| <= tol/sqrt2 (so the true angle error is <= tol). The first and last point of a
+    chain are kept exact. The thickness error of the tilted nozzle is corrected by tool_alignment in Stage 4.
+    """
+    n = len(out_b)
+    b = np.array(out_b, float)
+    c = np.array(out_c, float)
+    if n < 3:
+        return list(b), list(c)
+    hd = tol_deg / np.sqrt(2.0)
+    P = np.array([[w.x, w.y, w.z] for w in waypoints], float)
+    trav = [bool(getattr(w, "is_travel_move", False)) for w in waypoints]
+    starts = [0] + [i for i in range(1, n) if trav[i]] + [n]
+    for a, z in zip(starts[:-1], starts[1:]):
+        if z - a < 3:
+            continue
+        s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P[a:z], axis=0), axis=1))]
+        if s[-1] < 1e-9:
+            continue
+        b0, c0 = b[a:z].copy(), c[a:z].copy()
+        blo, bhi = np.maximum(b0 - hd, b_lo), np.minimum(b0 + hd, b_hi)
+        wide = np.minimum(90.0, hd / np.maximum(np.sin(np.radians(np.minimum(np.abs(b0) + hd, 90.0))), 1e-6))
+        clo, chi = np.maximum(c0 - wide, c_lo), np.minimum(c0 + wide, c_hi)
+        for arr, v in ((blo, b0), (bhi, b0), (clo, c0), (chi, c0)):   # chain ends stay exact
+            arr[0], arr[-1] = v[0], v[-1]
+        b[a:z] = _taut_string(s, blo, bhi)
+        c[a:z] = _taut_string(s, clo, chi)
+    return list(b), list(c)
 
 
 def _ramp_c_in_dead_zone(out_c, held, waypoints, c_lo, c_hi):

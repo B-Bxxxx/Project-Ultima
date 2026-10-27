@@ -84,7 +84,7 @@ class TrunnionXYZBCSolver(BaseKinematicSolver):
 
         # C continuous inside a move chain, re-chosen closest to zero at the start of each chain
         b_angles, c_angles = resolve_branches(raw_c_angles, b_angles, valid_waypoints, b_min, b_max, c_min, c_max,
-                                              config.vertical_dead_zone_deg)
+                                              config.vertical_dead_zone_deg, tolerance_deg=config.orientation_tolerance_deg)
 
         # Second pass: Compute Machine XYZ taking into account pivot offsets and eccentricity
         for idx, wp in enumerate(valid_waypoints):
