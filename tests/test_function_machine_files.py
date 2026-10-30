@@ -67,7 +67,7 @@ def test_resolve_values_applies_defaults_and_rejects_unknown_names():
 # ------------------------------------------------------------------ function files
 def test_shipped_function_templates_load_and_planar_plus_tilt_are_the_defaults():
     specs = load_function_dir(FUNCS)
-    assert set(specs) == {"Planar", "Progressive tilt", "Wave", "Conical", "Rounded ridge", "Ripple", "Dome (button)"} and not load_function_dir.errors
+    assert set(specs) == {"Planar", "Progressive tilt", "Wave", "Conical", "Rounded ridge", "Ripple", "Dome (button)", "Delayed tilt (2 stages)"} and not load_function_dir.errors
     tilt = specs["Progressive tilt"]
     assert set(tilt.parameters) == {"start_tilt_deg", "end_tilt_deg"} and tilt.kind == "tilt"
     p = tilt.to_slicer_params({"end_tilt_deg": 12})
@@ -293,3 +293,14 @@ def test_tool_alignment_of_the_three_solvers():
     assert s5l.tool_alignment == pytest.approx(math.cos(math.radians(20)), abs=1e-6)   # 30 wanted, 10 reached
     sh = KinematicsRegistry.get_solver("swivel_head_xyzbc")().solve(_traj(*n), cfg5).states[0]
     assert sh.tool_alignment == pytest.approx(1.0, abs=1e-6)
+
+
+def test_delayed_tilt_is_flat_until_the_offset_then_ramps():
+    from src.stage1_slicer.safe_expr import compile_expression, evaluate_compiled
+    spec = load_function_file(os.path.join(os.path.dirname(__file__), "..", "config", "functions", "delayed_tilt.json"))
+    v = {k: p.default for k, p in spec.parameters.items()}
+    code = compile_expression(spec.tilt_x_deg, set(v) | {"t"})
+    f = lambda t: float(evaluate_compiled(code, 0.0, 0.0, 0.0, {**v, "t": t}))
+    assert f(0.0) == 0.0 and f(0.3) == 0.0                       # flat below the first offset
+    assert abs(f(0.4) - 22.5) < 1e-9 and abs(f(0.5) - 45.0) < 1e-9
+    assert abs(f(0.6) - 45.0) < 1e-9 and abs(f(1.0) - 90.0) < 1e-9   # second bend adds the extra tilt

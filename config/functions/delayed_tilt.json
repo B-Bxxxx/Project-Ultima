@@ -1,0 +1,16 @@
+{
+  "format": "cam-function",
+  "version": 2,
+  "name": "Delayed tilt (2 stages)",
+  "description": "Planar layers tilted about X. The layers stay flat until the first offset (t = 0..1 is the layer position), then the tilt grows linearly to Tilt 1; after the second offset it grows further, by Extra tilt, to the end. Set Extra tilt to 0 for a single delayed bend. Offsets are fractions of the layer stack (0.4 = from 40 % of the part height).",
+  "tilt_x_deg": "tilt1_deg * clip((t - start1) / maximum(end1 - start1, 0.001), 0, 1) + extra_tilt_deg * clip((t - start2) / maximum(end2 - start2, 0.001), 0, 1)",
+  "pivot_y": "y_min",
+  "parameters": {
+    "start1": {"label": "Bend 1 start", "unit": "-", "default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05, "description": "Layer position (0..1) where the first tilt begins"},
+    "end1": {"label": "Bend 1 end", "unit": "-", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "description": "Layer position where Tilt 1 is reached"},
+    "tilt1_deg": {"label": "Tilt 1", "unit": "deg", "default": 45.0, "min": -90.0, "max": 90.0, "step": 1.0, "description": "Tilt reached after the first bend"},
+    "start2": {"label": "Bend 2 start", "unit": "-", "default": 0.6, "min": 0.0, "max": 1.0, "step": 0.05, "description": "Layer position where the second tilt begins"},
+    "end2": {"label": "Bend 2 end", "unit": "-", "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05, "description": "Layer position where the second tilt is complete"},
+    "extra_tilt_deg": {"label": "Extra tilt", "unit": "deg", "default": 45.0, "min": -90.0, "max": 90.0, "step": 1.0, "description": "Additional tilt added by the second bend (total = Tilt 1 + Extra tilt)"}
+  }
+}

@@ -70,7 +70,7 @@ def test_layer_range_playback_and_status(win):
 
 
 def test_shipped_functions_and_machines_are_listed(win):
-    assert [win.function_combo.itemText(i) for i in range(win.function_combo.count())] == ["Conical", "Dome (button)", "Planar", "Progressive tilt", "Ripple", "Rounded ridge", "Wave"]
+    assert [win.function_combo.itemText(i) for i in range(win.function_combo.count())] == ["Conical", "Delayed tilt (2 stages)", "Dome (button)", "Planar", "Progressive tilt", "Ripple", "Rounded ridge", "Wave"]
     assert win.function_combo.currentText() == "Planar"
     assert win.machine_combo.count() == 2
     assert win.function_form.names() == []                      # planar has no parameters
