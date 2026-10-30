@@ -1,0 +1,18 @@
+{
+  "format": "cam-function",
+  "version": 2,
+  "name": "Centre line (tube)",
+  "description": "Layers follow the centre line of a tube or pipe: every layer is the cross-section perpendicular to the curve (the nozzle axis follows the curve), so bent tubes print without supports. The centre line is found automatically from the two flat end caps of the part; the cap on the bed is the first layer. Max tilt lets the layer normal deviate from the curve tangent by up to this angle, which smooths the B/C motion (0 = exactly perpendicular).",
+  "centerline": "auto",
+  "parameters": {
+    "max_tilt_deg": {
+      "label": "Max tilt",
+      "unit": "deg",
+      "default": 0.0,
+      "min": 0.0,
+      "max": 30.0,
+      "step": 1.0,
+      "description": "Allowed angle between the layer normal and the centre line tangent"
+    }
+  }
+}

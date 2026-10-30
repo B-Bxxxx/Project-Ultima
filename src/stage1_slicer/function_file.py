@@ -52,12 +52,15 @@ class FunctionSpec:
     data_file: Optional[str] = None         # f(x, y) from a grid file
     tilt_x_deg: Optional[str] = None        # planar layers tilted about X, expression of t
     pivot_y: Optional[str] = None           # pivot line of the tilt (default "y_min")
+    centerline: Optional[str] = None        # layers follow a guide curve: "auto" (tube centre line from the mesh) or a centre line file
     parameters: Dict[str, ParamSpec] = field(default_factory=dict)
     base_dir: str = ""                      # where a relative data_file is looked up
     source: str = ""                        # path the spec was loaded from
 
     @property
     def kind(self) -> str:
+        if self.centerline is not None:
+            return "centerline"
         return "tilt" if self.tilt_x_deg is not None else ("grid" if self.data_file is not None else "expression")
 
     # ----------------------------------------------------------------------------- build / check
@@ -83,7 +86,7 @@ class FunctionSpec:
             raise FunctionFileError(f'{where}"type" does not exist in version {VERSION}: write the maths '
                                     f'("expression", "data_file" or "tilt_x_deg") into the file')
         known = {"format", "version", "name", "description", "expression", "data_file", "tilt_x_deg", "pivot_y",
-                 "parameters"}
+                 "centerline", "parameters"}
         extra = set(d) - known
         if extra:
             raise FunctionFileError(f"{where}unknown field(s) {sorted(extra)}")
@@ -92,7 +95,7 @@ class FunctionSpec:
             raise FunctionFileError(f'{where}"name" is missing')
         spec = cls(name=name.strip(), description=str(d.get("description", "")),
                    expression=d.get("expression"), data_file=d.get("data_file"),
-                   tilt_x_deg=d.get("tilt_x_deg"), pivot_y=d.get("pivot_y"),
+                   tilt_x_deg=d.get("tilt_x_deg"), pivot_y=d.get("pivot_y"), centerline=d.get("centerline"),
                    parameters=parse_parameters(d.get("parameters"), where), base_dir=base_dir, source=source)
         spec._check(where)
         return spec
@@ -118,10 +121,15 @@ class FunctionSpec:
             raise FunctionFileError(f"{where}\"{label}\": {e}") from e
 
     def _check(self, where: str) -> None:
-        given = [k for k in ("expression", "data_file", "tilt_x_deg") if getattr(self, k) is not None]
+        given = [k for k in ("expression", "data_file", "tilt_x_deg", "centerline") if getattr(self, k) is not None]
         if len(given) != 1:
             raise FunctionFileError(
-                f'{where}exactly one of "expression", "data_file", "tilt_x_deg" is needed (found {given or "none"})')
+                f'{where}exactly one of "expression", "data_file", "tilt_x_deg", "centerline" is needed (found {given or "none"})')
+        if self.kind == "centerline":
+            if not isinstance(self.centerline, str) or not self.centerline.strip():
+                raise FunctionFileError(f'{where}"centerline" must be "auto" or the path of a centre line file')
+            if "max_tilt_deg" not in self.parameters:
+                raise FunctionFileError(f'{where}a "centerline" function needs the parameter "max_tilt_deg"')
         for n, p in self.parameters.items():
             if n in (TILT_VAR, PIVOT_VAR):
                 raise FunctionFileError(f"{where}parameter name '{n}' is reserved")
@@ -134,6 +142,8 @@ class FunctionSpec:
         elif self.kind == "tilt":
             self._check_expr("tilt_x_deg", self.tilt_x_deg, (TILT_VAR,), where, scalar=True)
             self._check_expr("pivot_y", self.pivot_y if self.pivot_y is not None else DEFAULT_PIVOT, (PIVOT_VAR,), where, scalar=True)
+        elif self.kind == "centerline":
+            pass
         else:
             if not isinstance(self.data_file, str) or not self.data_file.strip():
                 raise FunctionFileError(f'{where}"data_file" must be a file name')
@@ -153,6 +163,16 @@ class FunctionSpec:
     def to_slicer_params(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Parameters for UniversalFieldSlicerPlugin.slice() (without layer_height etc.)."""
         v = self.values(overrides)
+        if self.kind == "centerline":
+            out = {"strategy": "centerline", "max_tilt_deg": float(v["max_tilt_deg"])}
+            if self.centerline.strip().lower() != "auto":
+                from src.stage1_slicer.centerline import Centerline
+                path = self.centerline if os.path.isabs(self.centerline) else os.path.join(self.base_dir or ".", self.centerline)
+                try:
+                    out["centerline_points"] = Centerline.load(path).to_dict(1.0)["points"]
+                except (ValueError, OSError) as e:
+                    raise FunctionFileError(f"function '{self.name}': centre line file {self.centerline!r}: {e}") from e
+            return out
         if self.kind == "tilt":
             out = {"strategy": "progressive_tilt", "tilt_expression": self.tilt_x_deg, "expression_params": v}
             if self.pivot_y is not None:
@@ -177,7 +197,7 @@ class FunctionSpec:
         d: Dict[str, Any] = {"format": FORMAT, "version": VERSION, "name": self.name}
         if self.description:
             d["description"] = self.description
-        for k in ("expression", "data_file", "tilt_x_deg", "pivot_y"):
+        for k in ("expression", "data_file", "tilt_x_deg", "pivot_y", "centerline"):
             if getattr(self, k) is not None:
                 d[k] = getattr(self, k)
         d["parameters"] = params

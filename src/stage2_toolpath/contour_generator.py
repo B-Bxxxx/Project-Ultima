@@ -419,7 +419,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
 
     # -- outline + shell passes --------------------------------------------------------------
     def compute_layer_regions(self, model: UniversalSlicedModel,
-                              profile: MinimalPrintProfile) -> Dict[int, LayerRegions]:
+                              profile: MinimalPrintProfile, strategy=None) -> Dict[int, LayerRegions]:
         """
         Outlines, walls and the infill split (bottom solid / top solid / sparse) of every layer,
         keyed by layer_index. Pure shapely, no 3D projection.
@@ -433,7 +433,11 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         plans: Dict[int, LayerRegions] = {}
         for layer in model.layers:
             plan = LayerRegions(layer_index=layer.layer_index)
-            plan.polygons = rings_to_polygons(layer.contours, layer.layer_index)
+            contours = layer.contours
+            if strategy is not None and getattr(strategy, "uses_chart", False):     # layers that are not graphs over the bed XY
+                contours = [SpatialContour(points=[(float(u), float(v), 0.0) for u, v in strategy.chart_points(c.points, layer.layer_index)],
+                                           normals=c.normals, feature_type=c.feature_type) for c in contours]
+            plan.polygons = rings_to_polygons(contours, layer.layer_index)
             if not plan.polygons:
                 logger.warning("Layer %d: no closed, valid contour; the layer is skipped.", layer.layer_index)
                 plans[layer.layer_index] = plan
@@ -501,7 +505,7 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
         bottom_solid, top_solid, infill) in print order. The input model is not modified.
         """
         strategy = self._build_strategy(model)
-        plans = self.compute_layer_regions(model, profile)
+        plans = self.compute_layer_regions(model, profile, strategy)
         out_layers: List[UniversalLayer] = []
         ordered_layers = sorted(model.layers, key=lambda l: l.layer_index)
         # the first layer that has any printable outline carries the brim
@@ -512,10 +516,12 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
             layer_idx = layer.layer_index
 
             contours: List[SpatialContour] = []
+            chart_state = {"last": None}                  # last planned point in the layer chart (only for chart strategies)
 
             def add_contour(coords, f_type, _layer=layer, _idx=layer_idx):
                 if len(coords) < 2:
                     return
+                chart_state["last"] = tuple(coords[-1][:2])
                 subdivided = [coords[0]]
                 for i in range(1, len(coords)):
                     subdivided.extend(self._subdivide_segment(subdivided[-1], coords[i], profile.max_segment_length))
@@ -560,6 +566,8 @@ class StandardToolpathGenerator(BaseToolpathGenerator):
                 remaining = list(chains)
                 while remaining:
                     pos = contours[-1].points[-1][:2] if contours else None
+                    if strategy is not None and getattr(strategy, "uses_chart", False):
+                        pos = chart_state["last"]
 
                     def start_dist(c):
                         if pos is None:

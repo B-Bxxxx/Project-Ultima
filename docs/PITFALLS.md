@@ -138,3 +138,19 @@ shortest ("taut string") curves inside that corridor (|dB| <= ε/√2, sin B·|d
 thickness error is corrected by tool_alignment in Stage 4. 0 = off (output unchanged). Project files saved before the parameter existed carry the
 old machine definition: reload the machine from its JSON to get the field. Measured on the cylinder + rounded-ridge project: moves with
 dC/mm > 30: 1870 (off) -> 1000 (ε=4) -> 744 (ε=8); Σ|dB| 35 000° -> 7 000°. The rest are chain starts/unwind steps, not touched.
+
+## Centre-line following slicing (`centerline` strategy, function "Centre line (tube)")
+For bent tubes the layers are the cross-sections perpendicular to a guide curve (the nozzle axis follows the curve), so no supports are needed.
+* **Centre line:** `src/stage1_slicer/centerline.py`. From the part: the two largest flat faces of equal area are the end caps; the tube is walked from the
+  cap on the bed (lower Z) to the other one, cutting it with planes perpendicular to the current direction (centroid of the outer loop). The end
+  tangents are exactly the cap normals. Or give the points in a `cam-centerline` JSON (`"centerline": "<file>"` in the function file).
+* **Chart:** the part is straightened: (u, v) in the layer plane, z' = arc length s. Real point = C(s) + u e1(s) + v e2(s) (rotation-minimising
+  frame). Stage 1 slices the straightened mesh by flat planes and maps back, Stage 2 plans walls / infill in the (u, v) chart
+  (`strategy.chart_points`, `uses_chart`) and projects back (`project_points`). The layers are NOT graphs over the bed XY, so every XY-based helper
+  (`thickness_check.probe`, the function preview) is skipped for this strategy.
+* **Thickness** follows from the map: h (1 + d/R) - thicker on the outside of a bend, thinner on the inside (d = distance from the curve, R = bend
+  radius). If the bend radius is smaller than the tube radius, neighbouring layers cross inside the part (a warning is logged).
+* **Max tilt:** the layer normal may deviate from the tangent by this angle; the widest smoothing of the tangent that keeps within it is used
+  (exact tangent at both ends over 5 mm, so the first layer lies flat on the bed). Fewer / smaller B and C motions. 0 = exactly perpendicular.
+* Limits: tube-like parts with two flat end caps (otherwise give the centre line); a flat cap that is not perpendicular to the real axis makes the
+  first mm slightly curved.
