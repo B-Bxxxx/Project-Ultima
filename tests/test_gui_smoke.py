@@ -283,3 +283,17 @@ def test_check_tab_shows_the_full_gcode_line_and_e(win):
     win.play_slider.setValue(3)
     txt = tab.lbl_pos.text()
     assert "G1 X" in txt and "E0.1" in txt and "E 0.10000" in txt and "path on the part" in txt and "tip speed / F" in txt
+
+
+def test_center_on_contact_area_option(win):
+    import trimesh
+    foot = trimesh.creation.box(extents=(10, 10, 10)); foot.apply_translation([0, 0, 5])
+    arm = trimesh.creation.box(extents=(40, 4, 4)); arm.apply_translation([22, 0, 12])
+    win.source_mesh = trimesh.util.concatenate([foot, arm])
+    win.center_ref.setCurrentIndex(win.center_ref.findData("contact"))
+    assert abs(win.mesh.bounds.mean(axis=0)[0]) > 5                        # the foot (not the box) is centred
+    win.center_ref.setCurrentIndex(win.center_ref.findData("bbox"))
+    assert abs(win.mesh.bounds.mean(axis=0)[0]) < 1e-6
+    win.chk_center.setChecked(False)
+    assert not win.center_ref.isEnabled()
+    win.chk_center.setChecked(True)

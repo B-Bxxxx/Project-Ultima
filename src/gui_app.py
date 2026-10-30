@@ -420,6 +420,11 @@ class MainWindow(QMainWindow):
         self.off_z_label = QLabel("Offset Z (mm):")
         self.chk_center = QCheckBox("Center on bed (XY)")
         self.chk_center.setChecked(True)
+        self.center_ref = _QComboBox()
+        self.center_ref.addItem("bounding box", "bbox")
+        self.center_ref.addItem("contact area with the table", "contact")
+        self.center_ref.setToolTip("What is placed in the middle of the bed: the centre of the part's bounding box, or the centre of the "
+                                   "area that touches the table (e.g. the foot of a tube that bends away)")
         self.chk_drop = QCheckBox("Drop to bed (Z = 0)")
         self.chk_drop.setChecked(True)
         f.addRow("Rotate X (deg):", self.rot_x)
@@ -429,6 +434,7 @@ class MainWindow(QMainWindow):
         f.addRow("Offset Y (mm):", self.off_y)
         f.addRow(self.off_z_label, self.off_z)
         f.addRow(self.chk_center)
+        f.addRow("Center on:", self.center_ref)
         f.addRow(self.chk_drop)
         btn = QPushButton("Reset placement")
         btn.clicked.connect(self.reset_placement)
@@ -439,6 +445,8 @@ class MainWindow(QMainWindow):
             w.valueChanged.connect(self.apply_placement)
         for c in (self.chk_center, self.chk_drop):
             c.stateChanged.connect(self.apply_placement)
+        self.center_ref.currentIndexChanged.connect(self.apply_placement)
+        self.chk_center.stateChanged.connect(lambda *_: self.center_ref.setEnabled(self.chk_center.isChecked()))
         self._update_z_offset_visibility()
 
     def _build_function_section(self):
@@ -706,7 +714,7 @@ class MainWindow(QMainWindow):
             "geometry": {"radius": self.cyl_r, "height": self.cyl_h, "wall": self.cyl_wall,
                          "width": self.cube_w, "depth": self.cube_d, "cube_height": self.cube_h},
             "placement": {"rot_x": self.rot_x, "rot_y": self.rot_y, "rot_z": self.rot_z, "off_x": self.off_x,
-                          "off_y": self.off_y, "off_z": self.off_z, "center_xy": self.chk_center, "drop_to_bed": self.chk_drop},
+                          "off_y": self.off_y, "off_z": self.off_z, "center_xy": self.chk_center, "center_ref": self.center_ref, "drop_to_bed": self.chk_drop},
             "slicer": {"layer_height": self.layer_height_spin, "transition_height": self.trans_height_spin,
                        "transition_mode": self.mode_combo, "ramp_layer_height": self.ramp_h_spin,
                        "ramp_min_gap": self.ramp_gap_spin},
@@ -914,13 +922,14 @@ class MainWindow(QMainWindow):
 
     def reset_placement(self):
         widgets = (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y, self.off_z,
-                   self.chk_center, self.chk_drop)
+                   self.chk_center, self.chk_drop, self.center_ref)
         for w in widgets:
             w.blockSignals(True)
         for s in (self.rot_x, self.rot_y, self.rot_z, self.off_x, self.off_y, self.off_z):
             s.setValue(0)
         self.chk_center.setChecked(True)
         self.chk_drop.setChecked(True)
+        self.center_ref.setCurrentIndex(0)
         for w in widgets:
             w.blockSignals(False)
         self._update_z_offset_visibility()
@@ -936,6 +945,7 @@ class MainWindow(QMainWindow):
             self.source_mesh,
             rotation_deg=(self.rot_x.value(), self.rot_y.value(), self.rot_z.value()),
             center_xy=self.chk_center.isChecked(), drop_to_bed=self.chk_drop.isChecked(),
+            center_ref=self.center_ref.currentData() or "bbox",
             offset_xy=(self.off_x.value(), self.off_y.value()), offset_z=self.off_z.value())
         self.stage1_model = self.stage2_traj = self.stage3_traj = None
         self.gcode = ""
