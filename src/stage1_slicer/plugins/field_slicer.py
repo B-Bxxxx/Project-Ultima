@@ -110,7 +110,7 @@ class UniversalFieldSlicerPlugin(BaseSlicerPlugin):
                     undeformed = strategy.undeform_points(pts_d, layer_idx)
                     if tol > 0.0:                                 # simplify the REAL 3D outline
                         undeformed = simplify_ring(undeformed, tol)
-                    xy = undeformed[:, :2]
+                    xy = strategy.chart_points(undeformed, layer_idx)
                     contour.points = [tuple(map(float, p)) for p in undeformed]
                     contour.normals = [tuple(map(float, n)) for n in strategy.normals_at(undeformed, layer_idx)]
                     contour.thicknesses = [float(t) for t in strategy.thicknesses_at(undeformed, layer_idx)]

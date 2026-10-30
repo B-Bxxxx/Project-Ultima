@@ -1078,8 +1078,8 @@ class MainWindow(QMainWindow):
             params = self._stage1_params()
         except (FunctionFileError, ValueError):
             params = None
-        if params is None or mesh is None or len(mesh.vertices) == 0:
-            self._check_text = ""
+        if params is None or mesh is None or len(mesh.vertices) == 0 or params.get("strategy") == "centerline":
+            self._check_text = ""                                  # centre-line layers are not graphs over XY: nothing to probe
             self._render_check()
             return
         name = params.pop("strategy")
@@ -1272,7 +1272,7 @@ class MainWindow(QMainWindow):
     def _active_field(self):
         """The field object of the current function (for the preview), or None (planar / tilt)."""
         spec = self.current_function()
-        if spec is None or spec.kind == "tilt":
+        if spec is None or spec.kind in ("tilt", "centerline"):
             return None
         try:
             params = spec.to_slicer_params(self.function_form.values())

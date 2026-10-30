@@ -159,6 +159,10 @@ class BaseSlicingStrategy(ABC):
         z_prime = getattr(self, "start_z", 0.0) + layer_idx * getattr(self, "layer_height", 0.2)
         return self.undeform_point((x, y, z_prime), layer_idx)
 
+    def chart_points(self, pts, layer_idx: int) -> np.ndarray:
+        """(N, 3) real points of a layer's contour -> (N, 2) coordinates Stage 2 plans in. Default: bed XY."""
+        return np.asarray(pts, float).reshape(-1, 3)[:, :2]
+
     def layer_gaps(self, x: float, y: float, layer_idx: int, eps: float = 1e-4) -> Tuple[float, float]:
         """
         (vertical gap, normal gap) between layer `layer_idx` and the next one at (x, y), measured on the
@@ -755,6 +759,9 @@ def build_strategy(name: str, mesh: trimesh.Trimesh, params: Dict[str, Any]) -> 
             raise ValueError("transition_mode 'ramp' is only available for expression / data-file functions")
         from src.stage1_slicer.ramp_strategy import RampCustomExpressionStrategy, RampGridFieldStrategy
         return (RampCustomExpressionStrategy if name == "custom_expr" else RampGridFieldStrategy)(mesh, params)
+    if name == "centerline":
+        from src.stage1_slicer.centerline_strategy import CenterlineStrategy
+        return CenterlineStrategy(mesh, params)
     if name == "planar":
         return PlanarStrategy(mesh, params)
     if name == "progressive_tilt":

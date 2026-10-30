@@ -67,7 +67,7 @@ def test_resolve_values_applies_defaults_and_rejects_unknown_names():
 # ------------------------------------------------------------------ function files
 def test_shipped_function_templates_load_and_planar_plus_tilt_are_the_defaults():
     specs = load_function_dir(FUNCS)
-    assert set(specs) == {"Planar", "Progressive tilt", "Wave", "Conical", "Rounded ridge", "Ripple", "Dome (button)"} and not load_function_dir.errors
+    assert set(specs) == {"Planar", "Progressive tilt", "Wave", "Conical", "Rounded ridge", "Ripple", "Dome (button)", "Centre line (tube)"} and not load_function_dir.errors
     tilt = specs["Progressive tilt"]
     assert set(tilt.parameters) == {"start_tilt_deg", "end_tilt_deg"} and tilt.kind == "tilt"
     p = tilt.to_slicer_params({"end_tilt_deg": 12})

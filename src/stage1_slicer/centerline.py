@@ -26,8 +26,9 @@ def _resample(points: np.ndarray, h: float) -> np.ndarray:
 
 
 class Centerline:
-    def __init__(self, points, smoothing_mm: float = 0.0, sample_mm: float = 0.25):
-        """`points`: (N, 3) polyline. `smoothing_mm`: RMS deviation allowed to a smoothing spline (0 = interpolate)."""
+    def __init__(self, points, smoothing_mm: float = 0.0, sample_mm: float = 0.25, exact_ends: int = 0):
+        """`points`: (N, 3) polyline. `smoothing_mm`: RMS deviation allowed to a smoothing spline (0 = interpolate).
+        `exact_ends`: this many points at each end are kept (almost) exactly: the end tangent stays what they say."""
         P = np.asarray(points, float)
         if P.ndim != 2 or P.shape[1] != 3 or len(P) < 2:
             raise ValueError("a centre line needs at least two 3D points")
@@ -41,7 +42,13 @@ class Centerline:
         s_raw = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
         from scipy.interpolate import splev, splprep
         k = 3
-        tck, _ = splprep(P.T, u=s_raw, k=k, s=(len(P) * smoothing_mm ** 2) if smoothing_mm > 0 else 0.0)
+        if smoothing_mm > 0:
+            sig = np.full(len(P), smoothing_mm)
+            if exact_ends > 0:
+                sig[:exact_ends] = sig[-exact_ends:] = 0.002
+            tck, _ = splprep(P.T, u=s_raw, w=1.0 / sig, k=k, s=float(len(P)))
+        else:
+            tck, _ = splprep(P.T, u=s_raw, k=k, s=0.0)
         self._tck, self._splev = tck, splev
         # arc length of the spline itself (differs a little from the polyline)
         dense = np.array(splev(np.linspace(0, s_raw[-1], max(200, int(s_raw[-1] / 0.05))), tck)).T
@@ -120,14 +127,14 @@ class Centerline:
                        smoothing_mm: float = 0.02, **kw) -> "Centerline":
         """
         Walks the tube from one end cap to the other. `start`: a point near the end cap the curve should start at (default: the
-        cap with the lower Y, then lower Z). The tube needs two flat end caps and a constant-ish cross-section.
+        cap with the lower Z, then lower Y: the cap on the bed). The tube needs two flat end caps and a constant-ish cross-section.
         """
         cap_a, cap_b = cls.end_caps(mesh)
         if start is not None:
             st = np.asarray(start, float)
             if np.linalg.norm(cap_b[0] - st) < np.linalg.norm(cap_a[0] - st):
                 cap_a, cap_b = cap_b, cap_a
-        elif tuple(np.round(cap_b[0][[1, 2]], 6)) < tuple(np.round(cap_a[0][[1, 2]], 6)):
+        elif tuple(np.round(cap_b[0][[2, 1]], 6)) < tuple(np.round(cap_a[0][[2, 1]], 6)):      # the cap on the bed (lower Z) first
             cap_a, cap_b = cap_b, cap_a
         end_c, end_n = cap_b
         pt = cap_a[0].copy()
@@ -136,7 +143,7 @@ class Centerline:
         pts = [pt.copy()]
         max_steps = int(4 * np.sum(mesh.bounds[1] - mesh.bounds[0]) / step_mm) + 10
         for _ in range(max_steps):
-            if float((pt - end_c) @ end_n) >= -0.5 * step_mm:              # reached the far cap
+            if float((pt - end_c) @ end_n) >= -1.2 * step_mm:              # (almost) at the far cap: the rest is the exact straight lead
                 break
             c1 = cls._centre(mesh, pt + tan * step_mm, tan, pt + tan * step_mm)
             t1 = c1 - pt
@@ -156,7 +163,7 @@ class Centerline:
         pts = [p for p in pts if np.linalg.norm(p - cap_a[0]) > lead and np.linalg.norm(p - end_c) > lead]
         start_pts = [cap_a[0] + tan0 * (k * 0.5 * step_mm) for k in range(0, 5)]
         end_pts = [end_c - end_n * (k * 0.5 * step_mm) for k in range(4, -1, -1)]
-        return cls(np.array(start_pts + pts + end_pts), smoothing_mm=smoothing_mm, **kw)
+        return cls(np.array(start_pts + pts + end_pts), smoothing_mm=smoothing_mm, exact_ends=len(start_pts), **kw)
 
     @staticmethod
     def _centre(mesh, origin, normal, near) -> np.ndarray:
