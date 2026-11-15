@@ -29,6 +29,7 @@ from src.common.param_spec import ParamSpec
 from src.common import project_file
 from src.common.project_file import ProjectFileError
 from src.gui_check import CheckTab
+from src.gui_viewcube import attach_view_cube
 from src.gui_editors import FunctionEditor, MachineEditor
 from src import gui_theme
 from src.stage1_slicer.function_file import (
@@ -324,6 +325,7 @@ class MainWindow(QMainWindow):
             w = gl.GLViewWidget()
             w.opts['distance'] = 80
             w.setBackgroundColor(gui_theme.GL_BACKGROUND)
+            attach_view_cube(w)
             self.tabs.addTab(w, title)
             return w
 

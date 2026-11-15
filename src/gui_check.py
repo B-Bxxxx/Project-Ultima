@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, 
                              QPushButton, QVBoxLayout, QWidget)
 
 from src import gui_theme
+from src.gui_viewcube import attach_view_cube
 from src.common.feature_styles import FEATURE_STYLES
 from src.common.gcode_check import Reconstruction, parse_gcode, reconstruct, table_map
 
@@ -68,6 +69,7 @@ class CheckTab(QWidget):
         self.view = gl.GLViewWidget()
         self.view.opts["distance"] = 80
         self.view.setBackgroundColor(gui_theme.GL_BACKGROUND)
+        attach_view_cube(self.view)
         lay.addWidget(self.view, 1)
 
         self.lbl_pos = QLabel("")
