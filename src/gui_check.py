@@ -25,6 +25,10 @@ BAD_COLOR = (1.0, 0.15, 0.15, 1.0)
 KNOWN = {s.key for s in FEATURE_STYLES}
 
 
+MOTION_MAX_SEGMENTS = 300000         # above this many segments the machine-motion view draws every n-th one (fixed n)
+BASE_CHUNK = 16                      # layers per cached chunk of the playback view
+
+
 class CheckTab(QWidget):
     """`machine_provider()` returns (solver, MachineConfig, MachineSpec) of the selected machine; `gcode_provider()` the last G-code."""
 
@@ -239,8 +243,12 @@ class CheckTab(QWidget):
             feat = self._feat_arr[idx]
             keep = (feat != "travel") & (np.isin(feat, list(vis)) | ~np.isin(feat, list(KNOWN)))
         idx = idx[keep]
-        stride = max(1, len(idx) // 25000)
-        idx = idx[::stride]
+        # Thinning (only for very long prints) must not change while the print advances: a stride that depends on the number of
+        # segments drawn so far picks different segments in every frame and the picture shimmers. It depends on the whole print only and
+        # keeps the segments whose index is a multiple of it, so the drawn set only ever grows.
+        stride = len(rc.part) // MOTION_MAX_SEGMENTS + 1
+        if stride > 1:
+            idx = idx[idx % stride == 0]
         if len(idx):
             a, b = rc.part[idx - 1] @ M.T + t, rc.part[idx] @ M.T + t
             for st in FEATURE_STYLES:
@@ -317,14 +325,24 @@ class CheckTab(QWidget):
 
         head_layer = int(self._layer_arr[stop - 1]) if stop > a else None
         idx = np.arange(max(a, 1), max(stop, 1))
-        below = idx[self._layer_arr[idx] < head_layer] if head_layer is not None and len(idx) else idx[:0]
-        now = idx[self._layer_arr[idx] >= head_layer] if head_layer is not None and len(idx) else idx[:0]
-        # complete layers below the head's layer: cached, rebuilt only when the view settings change
-        key = (id(rc), self.cmb_frame.currentIndex(), mark, self.tol.value(), a, head_layer, frozenset(vis))
-        if self._base is None or self._base[0] != key:
+        lay = self._layer_arr[idx] if len(idx) else idx
+        if head_layer is None:
             self._clear_base()
-            self._base = (key, draw(below))
-        self._items = draw(now)
+            self._items = []
+        else:
+            # Complete layers are cached in chunks of BASE_CHUNK layers and only the NEW chunk is drawn when the head advances (a rebuild of
+            # everything below the head at every layer made the playback slower and slower). The few layers of the unfinished chunk are
+            # redrawn each frame.
+            cut = (head_layer // BASE_CHUNK) * BASE_CHUNK
+            key = (id(rc), self.cmb_frame.currentIndex(), mark, self.tol.value(), a, frozenset(vis))
+            if self._base is None or self._base[0] != key or self._base[2] > cut:
+                self._clear_base()
+                self._base = (key, [], int(lay.min()) if len(lay) else 0)
+            k, items, done = self._base
+            if cut > done:
+                items += draw(idx[(lay >= done) & (lay < cut)])
+                self._base = (k, items, cut)
+            self._items = draw(idx[lay >= max(cut, self._base[2])])
         if stop > a:
             head = gl.GLScatterPlotItem(pos=P[stop - 1:stop].astype(np.float32), size=10, color=(1, 1, 1, 1))
             self.view.addItem(head)
