@@ -137,18 +137,19 @@ class Centerline:
         elif tuple(np.round(cap_b[0][[2, 1]], 6)) < tuple(np.round(cap_a[0][[2, 1]], 6)):      # the cap on the bed (lower Z) first
             cap_a, cap_b = cap_b, cap_a
         end_c, end_n = cap_b
+        reach = 1.5 * float(np.sqrt(np.asarray(mesh.facets_area).max() / np.pi))      # clip radius around the predicted centre
         pt = cap_a[0].copy()
         tan = -cap_a[1] / np.linalg.norm(cap_a[1])
         tan0 = tan.copy()
         pts = [pt.copy()]
         max_steps = int(4 * np.sum(mesh.bounds[1] - mesh.bounds[0]) / step_mm) + 10
         for _ in range(max_steps):
-            if float((pt - end_c) @ end_n) >= -1.2 * step_mm:              # (almost) at the far cap: the rest is the exact straight lead
+            if float((pt - end_c) @ end_n) >= -2.5 * step_mm:              # (almost) at the far cap: the rest is the exact straight lead
                 break
-            c1 = cls._centre(mesh, pt + tan * step_mm, tan, pt + tan * step_mm)
+            c1 = cls._centre(mesh, pt + tan * step_mm, tan, pt + tan * step_mm, reach)
             t1 = c1 - pt
             t1 /= np.linalg.norm(t1)
-            c2 = cls._centre(mesh, pt + t1 * step_mm, t1, c1)               # second pass with the better direction
+            c2 = cls._centre(mesh, pt + t1 * step_mm, t1, c1, reach)               # second pass with the better direction
             d = c2 - pt
             if np.linalg.norm(d) < 0.2 * step_mm:
                 raise ValueError("centre line tracking stalled")
@@ -166,7 +167,7 @@ class Centerline:
         return cls(np.array(start_pts + pts + end_pts), smoothing_mm=smoothing_mm, exact_ends=len(start_pts), **kw)
 
     @staticmethod
-    def _centre(mesh, origin, normal, near) -> np.ndarray:
+    def _centre(mesh, origin, normal, near, reach: float = 12.0) -> np.ndarray:
         """Centroid of the largest (outer) closed cross-section loop of the mesh cut by the plane, close to `near`."""
         sec = mesh.section(plane_origin=origin, plane_normal=normal)
         if sec is None:
@@ -176,23 +177,43 @@ class Centerline:
             a = np.cross(normal, [0.0, 1.0, 0.0])
         a /= np.linalg.norm(a)
         b = np.cross(normal, a)
+        from shapely.geometry import Point, Polygon
+        pn = Point(float((near - origin) @ a), float((near - origin) @ b))
+        disc = pn.buffer(reach, 32)
+        # The loop the axis runs through. A hollow tube has several nested loops (outer wall, ribs, bore): the innermost one that still
+        # contains the predicted point is the most reliable - ribs and flanges bias the centroid of the outer loop. Close to a bend
+        # the plane can merge several limbs of the part into one loop, so every loop is clipped to a disc around the predicted point.
         best = None
         for loop in sec.discrete:
             Q = np.asarray(loop)
             if len(Q) < 4:
                 continue
-            x, y = (Q - origin) @ a, (Q - origin) @ b
-            x1, y1 = np.roll(x, -1), np.roll(y, -1)
-            cr = x * y1 - x1 * y
-            area = cr.sum() / 2.0
-            if abs(area) < 1e-9:
+            try:
+                poly = Polygon(np.stack([(Q - origin) @ a, (Q - origin) @ b], axis=1)).buffer(0)
+                if not poly.contains(pn):
+                    continue
+                poly = poly.intersection(disc)
+            except Exception:
                 continue
-            cx, cy = ((x + x1) * cr).sum() / (6 * area), ((y + y1) * cr).sum() / (6 * area)
-            c = origin + cx * a + cy * b
-            if np.linalg.norm(c - near) > 12.0:
+            if poly.is_empty or poly.area < 1e-6:
                 continue
-            if best is None or abs(area) > best[0]:
-                best = (abs(area), c)
+            if best is None or poly.area < best[0]:
+                best = (poly.area, origin + poly.centroid.x * a + poly.centroid.y * b)
+        if best is None:                                              # the prediction fell outside: take the nearest loop centroid
+            for loop in sec.discrete:
+                Q = np.asarray(loop)
+                if len(Q) < 4:
+                    continue
+                try:
+                    poly = Polygon(np.stack([(Q - origin) @ a, (Q - origin) @ b], axis=1)).buffer(0).intersection(disc)
+                except Exception:
+                    continue
+                if poly.is_empty or poly.area < 1e-6:
+                    continue
+                c = origin + poly.centroid.x * a + poly.centroid.y * b
+                d = np.linalg.norm(c - near)
+                if best is None or d < best[0]:
+                    best = (d, c)
         if best is None:
             raise ValueError("centre line tracking found no cross-section")
         return best[1]
