@@ -187,3 +187,48 @@ def test_grid_field_full_pipeline_with_json_safe_metadata():
     top = [w for w in traj.waypoints if w.layer_index == 4 and not w.is_travel_move]
     xs = np.array([w.x for w in top]); zs = np.array([w.z for w in top])
     assert np.polyfit(xs, zs, 1)[0] == pytest.approx(-0.05, abs=0.005)
+
+
+# ------------------------------------------------------------------ point cloud -> function file -> toolpath
+def _bowl_cloud(tmp_path, n=3000, seed=7):
+    """An irregular (scattered, unsorted) point cloud of the bowl f = 0.01 (x^2 + y^2), as a csv with a header, an extra column and
+    comment lines; the corners of the area are included so the grid covers the whole part."""
+    rng = np.random.default_rng(seed)
+    xy = rng.uniform(-18, 18, size=(n, 2))
+    xy = np.vstack([xy, [[-18, -18], [18, -18], [-18, 18], [18, 18], [0, 0]]])
+    f = 0.01 * (xy[:, 0] ** 2 + xy[:, 1] ** 2)
+    lines = ["# scanned surface", "x;y;f;intensity"] + [f"{a:.4f};{b:.4f};{c:.5f};{rng.integers(0, 255)}" for (a, b), c in zip(xy, f)]
+    (tmp_path / "bowl.csv").write_text("\n".join(lines), encoding="utf-8")
+    return lambda x, y: 0.01 * (x ** 2 + y ** 2)
+
+
+def test_point_cloud_function_file_end_to_end(tmp_path):
+    """A function defined by a scattered point cloud (data_file, no expression): the cloud is resampled to a grid, the slicer uses it
+    as the layer surface and the toolpath layers follow the surface: z + f(x, y) is constant on a layer."""
+    from src.stage1_slicer.function_file import load_function_file
+    bowl = _bowl_cloud(tmp_path)
+    (tmp_path / "bowl.json").write_text(json.dumps({"format": "cam-function", "version": 2, "name": "Bowl cloud",
+                                                    "data_file": "bowl.csv", "parameters": {}}))
+    spec = load_function_file(str(tmp_path / "bowl.json"))
+    assert spec.kind == "grid"
+    params = spec.to_slicer_params()
+    assert params["strategy"] == "grid_field"
+    g = GridField.from_params(params)
+    for x, y in [(0, 0), (9, -4), (-12, 13), (15, 15)]:                       # the resampled grid reproduces the cloud's surface
+        assert g.evaluate(x, y) == pytest.approx(bowl(x, y), abs=0.2)             # IDW resampling: ~0.03 mm rms, local peaks to ~0.15
+
+    mesh = trimesh.creation.box(extents=(20, 20, 8))
+    mesh.apply_translation((0, 0, 4))
+    p = {"layer_height": 1.0, "transition_height": 3.0}
+    p.update(params)
+    model = UniversalFieldSlicerPlugin().slice(mesh, p)
+    json.dumps(model.metadata)                                               # the grid is stored JSON-safe
+    prof = MinimalPrintProfile(layer_height=1.0, nozzle_diameter=0.4, num_perimeters=1, infill_density=0.2,
+                               top_solid_layers=1, bottom_solid_layers=1)
+    traj = StandardToolpathGenerator().generate_toolpath(model, prof)
+    top = [w for w in traj.waypoints if w.layer_index == 6 and not w.is_travel_move]
+    assert len(top) > 50
+    x = np.array([w.x for w in top]); y = np.array([w.y for w in top]); z = np.array([w.z for w in top])
+    level = z + bowl(x, y)
+    assert np.ptp(z) > 0.5                                                   # the layer is really curved
+    assert np.std(level) < 0.1                                               # ... and follows the point cloud's surface
