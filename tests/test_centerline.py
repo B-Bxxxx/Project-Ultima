@@ -92,3 +92,21 @@ def test_rejects_a_mesh_without_two_caps():
 def test_needs_two_points():
     with pytest.raises(ValueError):
         Centerline.from_points([[0, 0, 0]])
+
+
+def test_follows_the_tube_past_an_eccentric_flange():
+    """A wide, off-centre flange ring around the tube must not pull the tracker (innermost loop wins), and the tracker must not
+    turn back near the far cap."""
+    th = np.linspace(0, np.pi / 2, 40)
+    path = np.vstack([[[0, 0, z] for z in np.linspace(0, 20, 21)[:-1]],
+                      np.stack([30 - 30 * np.cos(th), np.zeros_like(th), 20 + 30 * np.sin(th)], 1),
+                      [[30 + d, 0, 50] for d in np.linspace(1, 20, 20)]])
+    tube = _tube(path, 7.5)
+    i = np.argmin(np.linalg.norm(path - [30, 0, 50], axis=1))
+    ring = trimesh.creation.revolve(np.array([[7.4, -1.5], [12.5, 0.0], [7.4, 1.5]]), sections=48)      # pointed rib: no flat faces
+    ring.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    ring.apply_translation(path[i] + [0, 1.2, 0])                          # eccentric: shifted sideways
+    mesh = trimesh.util.concatenate([tube, ring])
+    c = Centerline.from_tube_mesh(mesh)
+    assert abs(c.length - Centerline.from_points(path).length) < 2.0
+    assert np.linalg.norm(c.points[-1] - path[-1]) < 1.5
