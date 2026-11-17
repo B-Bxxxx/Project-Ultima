@@ -142,3 +142,61 @@ def test_table_map_is_the_inverse_of_the_part_map():
         np.testing.assert_allclose(back, part, atol=1e-8)
         tip = sol.to_part_batch(cfg, pose[sel].reshape(1, 5))[0]
         np.testing.assert_allclose(M @ tip + t, pose[:3], atol=1e-8)
+
+
+def _layered_gcode(layers=40, per=30):
+    lines = ["G1 X0 Y0 Z0 F600"]
+    for L in range(layers):
+        lines.append(f";LAYER:{L}")
+        lines.append("; TYPE:outer_wall")
+        for k in range(per):
+            ang = 2 * np.pi * k / per
+            lines.append(f"G1 X{10 * np.cos(ang) + 20:.3f} Y{10 * np.sin(ang) + 20:.3f} Z{0.2 * L:.2f} B30 C{(k * 12) % 360} E0.1 F600")
+    return "\n".join(lines) + "\n"
+
+
+def _tab(gcode):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    global _APP
+    _APP = QApplication.instance() or QApplication([])             # keep a reference: a collected QApplication aborts Qt
+    from src.gui_check import CheckTab
+    solver, cfg, spec = machine(TRUNNION)
+    tab = CheckTab(lambda: (solver, cfg, spec), lambda: gcode)
+    tab.check_generated()
+    return tab
+
+
+def _segments(items):
+    from pyqtgraph.opengl import GLLinePlotItem
+    return sum(len(it.pos) // 2 for it in items if isinstance(it, GLLinePlotItem))
+
+
+def test_playback_draws_every_segment_exactly_once_while_the_head_advances():
+    """The chunked cache of complete layers must neither lose nor double a segment at any head position."""
+    tab = _tab(_layered_gcode())
+    tab.cmb_frame.setCurrentIndex(0)
+    n = tab.layer_total()
+    a, b = tab.sample_range(0, n - 1)
+    vis = {"outer_wall", "infill", "travel"}
+    for stop in list(range(a + 1, b, 37)) + [b]:
+        tab.render(0, n - 1, a, stop - a, vis)
+        got = _segments(tab._items) + _segments(tab._base[1] if tab._base else [])
+        assert got == stop - max(a, 1)
+    assert len(tab._base[1]) < 80                                  # chunked: not one item set per layer
+
+
+def test_machine_motion_thinning_is_stable_while_the_print_advances(monkeypatch):
+    import src.gui_check as gc
+    monkeypatch.setattr(gc, "MOTION_MAX_SEGMENTS", 300)             # force thinning on the small test print
+    tab = _tab(_layered_gcode())
+    tab.cmb_frame.setCurrentIndex(2)
+    n = tab.layer_total()
+    a, b = tab.sample_range(0, n - 1)
+    vis = {"outer_wall", "infill"}
+    counts = []
+    for stop in range(a + 100, b, 60):
+        tab.render(0, n - 1, a, stop - a, vis)
+        counts.append(_segments(tab._items[:-4]))
+    assert all(x <= y for x, y in zip(counts, counts[1:]))          # the drawn set only grows (no shimmering)
